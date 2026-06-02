@@ -1,0 +1,7 @@
+docs/
+.venv/
+__pycache__/
+*.pyc
+.docs_cache.json
+langchain_docs/
+.DS_Store

@@ -1,0 +1,6 @@
+张三，5年AI工程师
+清华大学计算机硕士2019年毕业
+技术栈: Python, PyTorch, LangChain, Docker, SQL
+负责从零搭建企业级RAG知识库系统，日均处理10万+文档查询
+主导模型服务化部署，将推理延迟从2s降至200ms
+开源项目LLM-Toolkit获得2k+ GitHub Stars

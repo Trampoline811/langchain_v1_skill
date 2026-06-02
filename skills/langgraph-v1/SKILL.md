@@ -1,0 +1,261 @@
+---
+name: langgraph-v1
+description: LangGraph v1 底层编排框架代码生成规范。提供 StateGraph/Functional API、持久化、中断、子图、流式、容错等底层能力。当用户需要自定义图拓扑、混合确定性与智能体工作流时使用。触发词：langgraph、StateGraph、图编排、persistence、持久化、interrupts、中断、subgraphs、子图、条件边、functional API、@entrypoint、@task、Send API、checkpointer、InMemorySaver、SqliteSaver。
+---
+
+# LangGraph v1 编码规范
+
+> LangGraph 是**低级编排运行时**，负责 durable execution、streaming、HITL、persistence。
+> **先用 `create_agent()`，不够了再降级到 LangGraph。** 绝大多数场景 `create_agent()` 足够。
+
+## 与 LangChain 的关系
+
+```
+DeepAgents  ← 预组装 harness（文件系统、子agent、规划内置）
+    │
+LangChain   ← Agent框架（create_agent, @tool, middleware）
+    │
+LangGraph   ← 编排运行时 ← 你在这一层
+```
+
+**LangGraph 不依赖 LangChain** — 可以不装 `langchain` 直接用 `langgraph` 构建纯数据处理图。
+
+---
+
+## 1. 两种 API
+
+| API | 风格 | 适用场景 |
+|-----|------|---------|
+| **Graph API** | 显式 StateGraph builder | 复杂拓扑、条件路由、并行 |
+| **Functional API** | `@entrypoint` / `@task` 装饰器 | 线性/简单分支、快速原型 |
+
+---
+
+## 2. Graph API
+
+```python
+from typing import TypedDict
+from langgraph.graph import StateGraph, START, END
+
+# 1. 定义 State
+class State(TypedDict):
+    messages: list
+    classification: str
+
+# 2. 定义节点
+def classify(state: State) -> dict:
+    """每个节点返回 dict 更新 state"""
+    return {"classification": "type_a"}
+
+def handler_a(state: State) -> dict:
+    return {"messages": [AIMessage(content="Handled by A")]}
+
+# 3. 构建图
+builder = StateGraph(State)
+builder.add_node("classify", classify)
+builder.add_node("handler_a", handler_a)
+builder.add_edge(START, "classify")
+
+# 条件边
+def route(state: State) -> str:
+    return state["classification"]  # 返回下一个节点名
+
+builder.add_conditional_edges("classify", route, {
+    "handler_a": "handler_a",
+    "handler_b": "handler_b",
+})
+builder.add_edge("handler_a", END)
+
+# 4. 编译
+graph = builder.compile(checkpointer=checkpointer)
+result = graph.invoke({"messages": [...]}, config)
+```
+
+### 关键 API
+
+```python
+from langgraph.graph import StateGraph, START, END
+from langgraph.types import Command, Send, GraphInterrupt
+
+# Reducer（并行安全汇聚）
+import operator
+class State(TypedDict):
+    results: Annotated[list, operator.add]  # 追加而非覆盖
+
+# Command — 更新 state + 路由
+def node(state) -> Command:
+    return Command(update={"field": value}, goto="next_node")
+
+# GraphInterrupt — 中断执行
+def node(state) -> Command:
+    return Command(interrupt={"reason": "需要人工审批", "data": state["plan"]})
+
+# Send — 动态并行 fan-out
+def assign_workers(state):
+    return [Send("worker", {"task": t}) for t in state["tasks"]]
+```
+
+---
+
+## 3. Functional API
+
+```python
+from langgraph.func import entrypoint, task
+from langgraph.checkpoint.memory import InMemorySaver
+
+@task
+def step_a(data: str) -> str:
+    return data.upper()
+
+@task
+def step_b(data: str) -> str:
+    return f"Processed: {data}"
+
+@entrypoint(checkpointer=InMemorySaver())
+def workflow(input: str) -> str:
+    a_result = step_a(input).result()
+    b_result = step_b(a_result).result()
+    return b_result
+```
+
+---
+
+## 4. 持久化（Checkpointer）
+
+```python
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.postgres import PostgresSaver
+
+# 开发
+checkpointer = InMemorySaver()
+
+# 本地
+checkpointer = SqliteSaver.from_conn_string("checkpoints.db")
+
+# 生产
+checkpointer = PostgresSaver.from_conn_string("postgresql://...")
+
+# 使用
+config = {"configurable": {"thread_id": "unique-thread-id"}}
+graph.invoke({"messages": [...]}, config)
+# 同一 thread_id → 自动恢复上下文
+```
+
+**checkpointer 是以下功能的前提：**
+- Human-in-the-loop 中断/恢复
+- 对话历史跨轮次持久化
+- Thread-level 限制（`ModelCallLimitMiddleware.thread_limit`）
+- Time travel 调试
+
+---
+
+## 5. 流式输出
+
+```python
+# 多模式流式
+for mode, chunk in graph.stream(
+    {"messages": [...]}, config,
+    stream_mode=["messages", "updates", "values", "events"],
+):
+    if mode == "messages":   # token 级打字机
+    elif mode == "updates":  # 状态增量
+    elif mode == "values":   # 完整状态快照
+
+# v3 事件流
+for event in graph.stream_events({"messages": [...]}, config, version="v3"):
+    event.get("text")
+    event.get("tool_calls")
+    event.get("output")
+```
+
+---
+
+## 6. Human-in-the-Loop（中断/恢复）
+
+```python
+from langgraph.types import Command
+
+# 图中断
+def approval_node(state):
+    return Command(interrupt={
+        "action": "review",
+        "data": state["pending"],
+        "reason": "人工审批"
+    })
+
+# 首次调用 → 触发中断
+result = graph.invoke({"input": "delete"}, config={"configurable": {"thread_id": "t1"}})
+# result.interrupts → [GraphInterrupt(...)]
+
+# 审批后恢复
+result = graph.invoke(
+    Command(resume={"approved": True}),
+    config={"configurable": {"thread_id": "t1"}}  # 同一 thread_id
+)
+```
+
+---
+
+## 7. 子图（Subgraphs）
+
+Agent 作为图的节点嵌入：
+
+```python
+from langchain.agents import AgentState, create_agent
+from langgraph.graph import StateGraph, START
+
+agent_node = create_agent("claude-sonnet-4-6", tools=[...], name="assistant")
+
+graph = (
+    StateGraph(AgentState)
+    .add_node("classify", classify_node)
+    .add_node("assistant", agent_node)   # Agent 即节点
+    .add_edge(START, "classify")
+    .add_conditional_edges("classify", route, {"assistant": "assistant", ...})
+    .compile()
+)
+# Agent 的 middleware/checkpointer/streaming 完整保留在子图中
+```
+
+---
+
+## 8. 容错
+
+```python
+# 节点级重试
+from langgraph.types import RetryPolicy
+
+builder.add_node("api_call", api_node,
+    retry=RetryPolicy(
+        max_attempts=3,
+        backoff_factor=2.0,
+        initial_interval=1.0,
+        retry_on=(ConnectionError, TimeoutError),
+    )
+)
+```
+
+---
+
+## 9. 何时用 LangGraph？
+
+| 场景 | 用 create_agent() | 用 LangGraph |
+|------|:--:|:--:|
+| 标准 tool-calling loop | ✅ | ❌ 过度设计 |
+| 多轮对话 + 记忆 | ✅ | ❌ |
+| 确定性步骤 + 条件分支 | ❌ | ✅ |
+| 并行 fan-out / fan-in | ❌ | ✅ |
+| 多 Agent 间复杂路由 | ❌ | ✅ |
+| Human-in-the-Loop（底层） | ❌ | ✅ |
+| 纯数据处理 pipeline | ❌ | ✅ |
+
+---
+
+## 10. 执行协议
+
+1. **先 create_agent，后 LangGraph** — 不要上来就写 StateGraph
+2. **图要简单** — 节点超过 5-7 个考虑拆分
+3. **State 用 TypedDict** — 字段尽量少，用 `Annotated[list, operator.add]` 安全汇聚
+4. **checkpointer 不可缺** — 持久化 / HITL / 多轮对话都依赖它
+5. **流式直接用 `stream_mode=["messages"]`** — 打字机效果最简单的方式
