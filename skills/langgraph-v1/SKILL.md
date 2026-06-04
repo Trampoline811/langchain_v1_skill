@@ -259,3 +259,97 @@ builder.add_node("api_call", api_node,
 3. **State 用 TypedDict** — 字段尽量少，用 `Annotated[list, operator.add]` 安全汇聚
 4. **checkpointer 不可缺** — 持久化 / HITL / 多轮对话都依赖它
 5. **流式直接用 `stream_mode=["messages"]`** — 打字机效果最简单的方式
+
+---
+
+## 11. 设计模式
+
+### 11.1 GraphConfig：按节点选模型
+
+不同节点对模型能力要求不同——生成用廉价模型跑量，审查用强模型把关。
+
+```python
+from typing import TypedDict, Literal
+
+class GraphConfig(TypedDict):
+    draft_model: Literal["openai", "anthropic"]    # 生成节点
+    critique_model: Literal["openai", "anthropic"]  # 审查节点
+
+def draft(state, config):
+    model_name = config["configurable"].get("draft_model", "openai")
+    model = _get_model(model_name)
+    ...
+
+# 编译时声明 config schema
+builder = StateGraph(State, config_schema=GraphConfig)
+graph = builder.compile(checkpointer=checkpointer)
+
+# 调用时按节点切换模型
+graph.invoke(input, {"configurable": {"draft_model": "anthropic"}})
+```
+
+**原则**：生成/提取用便宜模型，审查/决策用强模型。GraphConfig 让调用方在 `invoke` 时切换，无需改图。
+
+### 11.2 RemoveMessage：语境窗口管理
+
+图中提取结构化信息后，对话历史不再有用——删掉释放窗口：
+
+```python
+from langchain_core.messages import RemoveMessage
+
+def extract_requirements(state):
+    """工具调用提取需求后，信息已结构化 → 清历史"""
+    response = model.bind_tools([Build]).invoke(state["messages"])
+    if response.tool_calls:
+        requirements = response.tool_calls[0]["args"]["requirements"]
+        # 清除对话历史，只保留结构化结果
+        delete_messages = [RemoveMessage(id=m.id) for m in state["messages"]]
+        return {"requirements": requirements, "messages": delete_messages}
+    return {"messages": [response]}
+```
+
+**原则**：结构化提取完成 → 立即删历史。不要让无用对话吃掉后续节点的语境窗口。
+
+### 11.3 多阶段质量环：程序化检查 + LLM 审查
+
+一道检查不够。先程序化（格式/语法，零 token 成本），过了再 LLM 审查（语义/正确性）：
+
+```
+draft → check(程序化) → critique(LLM) → 通过? → END
+  ↑         ↓ 格式错           ↓ 语义错        |
+  └─────────└─────────────────┘  (loop back)   ✓
+```
+
+```python
+import re
+
+# 1. 程序化检查 —— 零 token 成本
+def check(state):
+    """正则提取代码块，格式不对直接打回"""
+    code_blocks = re.findall(
+        r'```python\s*(.*?)\s*```',
+        state["messages"][-1].content, re.DOTALL
+    )
+    if not code_blocks:
+        return {"messages": [
+            {"role": "user", "content": "缺少代码块，请重新生成"}
+        ]}
+    return {"code": code_blocks[0]}
+
+# 2. LLM 审查 —— 语义把关
+class Accept(BaseModel):
+    logic: str
+    accept: bool
+
+def critique(state, config):
+    """LLM 审查代码正确性，输出 Accept(accept=True/False)"""
+    model = _get_model(config, "anthropic", "critique_model")
+    response = model.bind_tools([Accept]).invoke(critique_prompt + state["code"])
+    return {"accepted": response.tool_calls[0]["args"]["accept"]}
+
+# 3. 路由条件
+def route_critique(state) -> Literal["draft", END]:
+    return END if state["accepted"] else "draft"
+```
+
+**原则**：**先廉价后昂贵**。程序化检查能拦住的（格式错、缺少代码块、多代码块）绝不浪费 LLM 调用。
