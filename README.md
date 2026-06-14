@@ -1,7 +1,7 @@
 # LangChain v1.0 Skill Suite
 
-为 LLM 提供 LangChain 生态编码规范的 Claude Code Skill 合集。
-覆盖 Agent Framework / Runtime / Harness 三层 + 选型路由。
+为**没有 LangChain v1.0（2025.11+）训练数据**的 LLM 提供编码规范的 Claude Code Skill 合集。
+覆盖 Agent Framework / Runtime / Harness 三层 + 选型路由。离线 LLM 会用 2023 年的 v0.x API——这些 skill 纠正那一切。
 
 ## 盲测结果
 
