@@ -5,20 +5,26 @@ description: LangGraph v1 底层编排框架代码生成规范。提供 StateGra
 
 # LangGraph v1 编码规范
 
-> LangGraph 是**低级编排运行时**，负责 durable execution、streaming、HITL、persistence。
+> LangGraph 是 **Agent Runtime**（代理运行时），负责 durable execution、streaming、HITL、persistence。
+> LangChain 官方定位：LangGraph ≈ Temporal/Inngest 级别的 durable execution engine，同时兼有 Framework 属性。
+> — Harrison Chase, "[Agent Frameworks, Runtimes, and Harnesses- oh my!](https://www.langchain.com/blog/agent-frameworks-runtimes-and-harnesses-oh-my)" (2025.10)
+>
 > **先用 `create_agent()`，不够了再降级到 LangGraph。** 绝大多数场景 `create_agent()` 足够。
 
 ## 与 LangChain 的关系
 
 ```
-DeepAgents  ← 预组装 harness（文件系统、子agent、规划内置）
+DeepAgents  ← Agent Harness（预组装电池包，规划/文件系统/子Agent 全内置）
     │
-LangChain   ← Agent框架（create_agent, @tool, middleware）
+LangChain   ← Agent Framework（create_agent, @tool, middleware）
+    │         ⚠️ LangChain 1.0 的 agent loop 跑在 LangGraph runtime 之上
     │
-LangGraph   ← 编排运行时 ← 你在这一层
+LangGraph   ← Agent Runtime（durable execution / streaming / HITL / persistence）
+               Harrison 原话："LangGraph is probably best described as
+               both a runtime and a framework."
 ```
 
-**LangGraph 不依赖 LangChain** — 可以不装 `langchain` 直接用 `langgraph` 构建纯数据处理图。
+**LangGraph 不依赖 LangChain** — 可以不装 `langchain` 直接用 `langgraph` 构建纯数据处理图。反过来，**LangChain 依赖 LangGraph** — `create_agent()` 底层由 StateGraph 驱动。
 
 ---
 

@@ -1,5 +1,10 @@
 # deepagents-v1 更新日志
 
+## 2026-06-14
+
+- **新增** 定位章节：LangChain 官方定义的 Agent Harness 定位；补 Harness/Framework/Runtime 精装房/毛坯房/地基类比；选型边界顶部加官方术语引用
+- **来源** Harrison Chase 官方博文 "[Agent Frameworks, Runtimes, and Harnesses- oh my!](https://www.langchain.com/blog/agent-frameworks-runtimes-and-harnesses-oh-my)" (2025.10)
+
 ## 2026-06-04
 
 - **新增** ⚠️ 选型边界指南（frontmatter 之后）：明确告知 LLM 何时该用/不该用 Deep Agents、何时直接用 LangGraph，附竞品对比表

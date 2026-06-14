@@ -8,6 +8,25 @@ description: LangChain v1.0 (2025.11+) 代码生成规范。强制使用 create_
 > v1.0 只有四个概念：**model、agent、tool、middleware**。没有 chain。
 > 本 skill 负责 **「怎么写」**。选型决策 → `references/decision-guide.md` | 完整 API → `references/api-reference.md` | 迁移 → `references/migration-comparison.md`
 
+## 定位：Agent Framework
+
+> LangChain 官方定义：LangChain 是 **Agent Framework**（代理框架），LangGraph 是 **Agent Runtime**（代理运行时），DeepAgents 是 **Agent Harness**（代理即用电池包）。
+> — Harrison Chase, "[Agent Frameworks, Runtimes, and Harnesses- oh my!](https://www.langchain.com/blog/agent-frameworks-runtimes-and-harnesses-oh-my)" (2025.10)
+
+```
+DeepAgents  ← Agent Harness（预组装电池包，开箱即用）
+    │         规划/文件系统/子Agent/记忆全部内置
+    │
+LangChain   ← Agent Framework（抽象层，心智模型）← 你在这一层
+    │         create_agent / @tool / middleware / checkpointer / store
+    │         ⚠️ LangChain 1.0 的 agent loop 跑在 LangGraph runtime 之上
+    │
+LangGraph   ← Agent Runtime（基础设施层）
+               durable execution / streaming / HITL / persistence
+```
+
+**关键架构事实**：`create_agent()` 底层由 LangGraph StateGraph 驱动。你写的每一个 LangChain agent，实际上是一个编译好的 LangGraph 图。
+
 ## 禁止使用（黑名单）
 
 | ❌ 旧版 | ✅ v1.0 |
