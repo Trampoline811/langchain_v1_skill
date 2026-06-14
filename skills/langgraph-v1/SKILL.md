@@ -25,6 +25,7 @@ LangGraph   ← Agent Runtime（durable execution / streaming / HITL / persisten
 ```
 
 **LangGraph 不依赖 LangChain** — 可以不装 `langchain` 直接用 `langgraph` 构建纯数据处理图。反过来，**LangChain 依赖 LangGraph** — `create_agent()` 底层由 StateGraph 驱动。
+> 💡 不确定用哪个？→ `/agent-sdk-router`（LangChain 官方三选一决策表）
 
 ---
 

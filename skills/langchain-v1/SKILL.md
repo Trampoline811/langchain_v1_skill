@@ -25,7 +25,8 @@ LangGraph   ← Agent Runtime（基础设施层）
                durable execution / streaming / HITL / persistence
 ```
 
-**关键架构事实**：`create_agent()` 底层由 LangGraph StateGraph 驱动。你写的每一个 LangChain agent，实际上是一个编译好的 LangGraph 图。
+**关键架构事实**：`create_agent()` 底层由 LangGraph StateGraph 驱动。
+> 💡 不确定用哪个？→ `/agent-sdk-router`（LangChain 官方三选一决策表）你写的每一个 LangChain agent，实际上是一个编译好的 LangGraph 图。
 
 ## 禁止使用（黑名单）
 

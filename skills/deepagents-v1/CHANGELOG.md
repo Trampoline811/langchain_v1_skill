@@ -3,6 +3,7 @@
 ## 2026-06-14
 
 - **新增** 定位章节：LangChain 官方定义的 Agent Harness 定位；补 Harness/Framework/Runtime 精装房/毛坯房/地基类比；选型边界顶部加官方术语引用
+- **新增** agent-sdk-router 交叉引用（定位章节末尾）
 - **来源** Harrison Chase 官方博文 "[Agent Frameworks, Runtimes, and Harnesses- oh my!](https://www.langchain.com/blog/agent-frameworks-runtimes-and-harnesses-oh-my)" (2025.10)
 
 ## 2026-06-04
