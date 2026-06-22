@@ -1,6 +1,8 @@
 # LangChain v1 API 完整参考
 
-> 按需查阅。日常编码只需 SKILL.md 的速查表。
+> **来源**: 官方 `langchain-middleware-built-in.md` + `langchain-agents.md` + `langchain-tools.md` + `langchain-structured-output.md` + AgentSeek `middleware.md`（洋葱模型）
+> **定位**: 按需查阅。日常编码只需 SKILL.md 的速查表。
+> **文中标记**: 无标记 = 官方文档提炼 | `[社区]` = 社区实战案例验证
 
 ## 中间件完整目录
 
@@ -115,6 +117,27 @@ PIIMiddleware(
     apply_to_tool_results=True,
 )
 ```
+
+### 中间件执行顺序（洋葱模型）`[社区]`
+
+多个 middleware 组合时，hooks 执行顺序不是直觉的从上到下：
+
+```
+middleware=[m1, m2, m3]
+
+before_model:  m1 → m2 → m3  (列表正序)
+wrap_model_call: m1 → m2 → m3 (嵌套包裹)
+after_model:   m3 → m2 → m1  (反序！)
+before_agent:  m1 → m2 → m3  (正序)
+after_agent:   m3 → m2 → m1  (反序)
+```
+
+**核心规则**：
+- 需要**最早拦截**的放列表最前面（速率限制、权限检查）
+- 需要**最后兜底**的也放最前面（`wrap_model_call` 嵌套中外层最后执行）
+- `wrap_model_call` 的第一个 middleware 最早收到请求、最晚收到响应
+
+> 排坑详情 → `references/common-pitfalls.md` §5-6
 
 ---
 

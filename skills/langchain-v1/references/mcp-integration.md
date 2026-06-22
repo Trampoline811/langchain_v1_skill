@@ -1,6 +1,8 @@
 # MCP 工具集成详解
 
-> 从 SKILL.md 分离出来的 MCP 深度内容。
+> **来源**: 官方 `langchain-mcp.md` + 社区案例 `Ep.01 从零搭建mini ChatGPT（上）.md`
+> **定位**: 从 SKILL.md 分离出来的 MCP 深度内容。
+> **文中标记**: 无标记 = 官方文档 | `[社区]` = 社区实战案例
 
 ## MCP 解决什么问题
 
@@ -123,3 +125,59 @@ client = MultiServerMCPClient({...}, tool_interceptors=[auth_interceptor])
 | MCP server 需要注入应用状态 | MCP + Interceptor |
 | Agent 层面统一控制行为 | Middleware（作用于所有工具） |
 | MCP 层单独控制某个 server | Interceptor（只作用于 MCP 工具） |
+
+## `[社区]` 实战：端到端 MCP Agent（来自社区案例）
+
+```python
+# pip install langchain langchain-mcp-adapters langchain-deepseek python-dotenv
+import asyncio
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain.agents import create_agent
+from langchain.chat_models import init_chat_model
+
+async def main():
+    # 1. 连接多个 MCP Server
+    client = MultiServerMCPClient({
+        "time": {
+            "transport": "stdio",
+            "command": "uvx",
+            "args": ["mcp-server-time"],
+        },
+        "sqlite": {
+            "transport": "stdio",
+            "command": "uvx",
+            "args": ["mcp-server-sqlite", "--db-path", "data.db"],
+        },
+    })
+
+    # 2. 获取所有 MCP 工具
+    tools = await client.get_tools()
+
+    # 3. 创建 Agent（MCP 工具 + 自定义工具可混用）
+    model = init_chat_model("deepseek:deepseek-chat")
+    agent = create_agent(
+        model=model,
+        tools=tools,
+        system_prompt="你是一个具备时间和数据库查询能力的助手。",
+    )
+
+    # 4. 调用
+    result = await agent.ainvoke(
+        {"messages": [{"role": "user", "content": "现在几点了？查下今天的订单数据。"}]}
+    )
+    print(result["messages"][-1].content)
+
+asyncio.run(main())
+```
+
+> **关键点**：MCP 工具和 `@tool` 工具可以混用在同一 `create_agent()` 中。Agent 不需要知道工具来源。
+
+## 生产依赖
+
+```text
+langchain>=1.0.0
+langchain-mcp-adapters    # MCP 官方适配器
+mcp                       # MCP 官方 SDK
+mcp-server-time           # 时间工具 MCP Server
+mcp-server-sqlite         # SQLite 工具 MCP Server
+```

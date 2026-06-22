@@ -283,6 +283,12 @@ MemoryMiddleware(
 
 ### 2.5 技能（SkillsMiddleware）
 
+> Skills = 目录结构 `SKILL.md` + 可选 `scripts/` `references/` `assets/`。
+> Deep agent skills 遵循 [Agent Skills 规范](https://agentskills.io/specification)。
+> 核心机制：**渐进披露（Progressive Disclosure）**— Agent 只在需要时加载完整技能内容。
+
+**基础结构：**
+
 ```python
 from deepagents.middleware import SkillsMiddleware
 
@@ -290,8 +296,109 @@ SkillsMiddleware(
     backend=StateBackend(),
     sources=["./skills/"],  # 技能目录，按需加载
 )
-# Agent 遇到相关任务时加载对应 skill，而非全部预载入上下文
 ```
+
+```
+skills/
+├── langgraph-docs/
+│   └── SKILL.md            # 必需：YAML frontmatter + markdown 指令
+├── arxiv-search/
+│   ├── SKILL.md
+│   ├── scripts/
+│   │   └── search.py      # 可执行脚本
+│   └── references/
+│       └── api-guide.md    # 参考文档
+└── order-helpers/
+    ├── SKILL.md
+    └── assets/
+        └── template.json   # 模板等资源
+```
+
+**Interpreter Skills（可执行代码技能）：**
+
+```python
+# skills/arxiv-search/SKILL.md  frontmatter:
+# ---
+# name: arxiv-search
+# description: Search arxiv for research papers
+# module: scripts/search.py     ← 关键：声明为 interpreter skill
+# ---
+
+# skills/arxiv-search/scripts/search.py
+def search_arxiv(query: str, max_results: int = 10) -> dict:
+    """Search arxiv API and return structured results."""
+    import requests
+    resp = requests.get(f"https://api.arxiv.org/...")
+    return resp.json()
+```
+
+> Interpreter skills 的 `module` frontmatter 让 Agent 可以将 skill 加载为可调用 Python 模块。
+
+**技能权限（Skill Permissions）：**
+
+```python
+from deepagents.middleware import SkillsMiddleware
+
+SkillsMiddleware(
+    backend=StateBackend(),
+    sources=["./skills/"],
+    permissions={
+        # 所有用户共享技能
+        "langgraph-docs": {"type": "shared", "users": "*"},
+        # 限定用户才能用
+        "admin-tools": {"type": "limited", "users": ["admin", "operator"]},
+        # 只读（禁止 Agent 写入修改）
+        "compliance-rules": {"type": "read_only"},
+        # Agent 可编辑的个人技能
+        "my-notes": {"type": "editable", "scope": "user"},
+    },
+)
+```
+
+**运行时动态加载技能：**
+
+```python
+# 固定列表
+agent = create_deep_agent(model=model, skills=["./skills/basic/"])
+
+# 动态列表（按环境/用户切换）
+def get_skills(runtime):
+    if runtime.context.get("tier") == "pro":
+        return ["./skills/basic/", "./skills/pro/"]
+    return ["./skills/basic/"]
+
+agent = create_deep_agent(model=model, skills=get_skills)
+
+# 命名空间技能（不同用户看不同技能）
+agent = create_deep_agent(model=model, skills=[
+    "./skills/shared/",
+    {"namespace": "user-123", "source": "./skills/personal/"},
+])
+```
+
+**子 Agent 专属技能：**
+
+```python
+subagents = [{
+    "name": "researcher",
+    "description": "深度调研",
+    "system_prompt": "你是研究员...",
+    "skills": ["./skills/research/"],  # 只给 researcher 的专属技能
+}]
+agent = create_deep_agent(model=model, subagents=subagents)
+```
+
+**Sandbox 脚本技能** — 在隔离环境中执行 skill 代码：
+
+```python
+SkillsMiddleware(
+    backend=StateBackend(),
+    sources=["./skills/"],
+    sandbox=True,  # 启用沙箱执行
+)
+```
+
+> 完整参考: `docs/official/deepagents-skills.md` (1012行) | [Agent Skills 规范](https://agentskills.io/specification)
 
 ---
 
@@ -557,4 +664,73 @@ agent = create_deep_agent(
 2. **需要上下文管理 → `create_deep_agent()`** — 自动压缩 + 文件系统
 3. **需要子 agent 并行 → 加 `SubAgentMiddleware`** — 每个子 agent 独立上下文
 4. **生产环境用 FilesystemBackend** — StateBackend 不持久化
-5. **微调中间件 → `create_agent()` + 手选 middleware** — 精确控制堆栈
+5. **微调中间件 → `create_agent()` + 手选 middleware`** — 精确控制堆栈
+6. **Backend 选型 →** `references/backends-guide.md`
+7. **子 Agent 详解 →** `references/subagents-guide.md`
+8. **Skills 详解 →** `references/skills-guide.md`
+
+---
+
+## 10. 实战案例速查
+
+> 完整案例源码见 `docs/community/cases/`。deepagents 最擅长**需要文件系统 + 代码执行 + 多步子任务**的复杂场景。
+
+### 10.1 全自动数据分析 Agent
+
+```
+场景：上传 CSV/Excel → 自动清洗 → 探索分析 → 生成可视化报告
+技术栈：create_deep_agent + FilesystemMiddleware + 代码解释器 + DeepSeek-OCR
+```
+
+```python
+from deepagents import create_deep_agent
+from deepagents.backends import FilesystemBackend
+
+agent = create_deep_agent(
+    model="deepseek:deepseek-chat",
+    backend=FilesystemBackend(root_dir="workspace"),
+    system_prompt="""You are a data analyst. 
+    When the user uploads data, clean it, explore it, and generate a report.
+    Use write_file to save plots and analysis results.""",
+)
+
+result = agent.invoke({
+    "messages": [{"role": "user", "content": "分析 sales.csv 的月度趋势并生成可视化"}]
+})
+# Agent 自动：读文件 → 清洗 → 统计 → 画图 → write_file 保存 → 输出报告
+```
+
+### 10.2 文档审核 Agent
+
+```
+场景：上传 PDF 合同 → 结构化提取条款 → 逐条合规检查 → 输出审核报告
+技术栈：create_deep_agent + OCR 解析 + RAG 知识库 + HumanInTheLoopMiddleware
+```
+
+```python
+from deepagents import create_deep_agent
+from langchain.agents.middleware import HumanInTheLoopMiddleware
+
+agent = create_deep_agent(
+    model="deepseek:deepseek-chat",
+    tools=[ocr_parse, search_regulations],
+    middleware=[
+        HumanInTheLoopMiddleware(interrupt_on={"final_approval": True}),
+    ],
+    system_prompt="""You audit documents for compliance.
+    1. Parse the document with ocr_parse
+    2. Extract key clauses
+    3. Check each clause against regulations using search_regulations
+    4. Write findings with write_file
+    5. Call final_approval for human review before submitting""",
+)
+```
+
+### 10.3 案例场景对照
+
+| 你要做… | 用 | 参考案例 |
+|---------|-----|---------|
+| 自动数据分析/EDA/可视化 | `create_deep_agent` + 文件系统 + 代码执行 | [数据分析Agent](docs/community/cases/全自动数据分析可视化Agent系统.md) |
+| 多模态 PDF/合同审核 | `create_deep_agent` + OCR + RAG + HITL | [文档审核Agent](docs/community/cases/LangChain%20v1.0%20文档审核类Agent开发实战.md) |
+| 全栈 Agent + MCP | `create_agent` + `MultiServerMCPClient` + FastAPI | [mini ChatGPT](docs/community/cases/Ep.01%20从零搭建mini%20ChatGPT（上）.md) |
+| OCR 多模态解析 | `create_agent` + MinerU/DeepSeek-OCR + vLLM | [OCR PDF](docs/community/cases/LangChain1.0%20+%20OCR%20多模态PDF解析实战.md) |

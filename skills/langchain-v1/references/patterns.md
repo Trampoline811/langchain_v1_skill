@@ -1,8 +1,10 @@
 # 图模式参考
 
-> 包含 create_agent 多智能体模式（5 种）+ LangGraph 底层图模式（4 种）。
+> **来源**: 官方 `langchain-multi-agent/*.md` (5 种模式) + 官方 `langgraph-workflows-agents.md` (4 种底层图模式) + AgentSeek `multi-agent.md` + `streaming.md`（社区排坑）
+> **定位**: 包含 create_agent 多智能体模式（5 种）+ LangGraph 底层图模式（4 种）+ 流式最佳实践 + Subagents vs Handoffs 决策。
+> **文中标记**: 无标记 = 官方文档 | `[社区]` = 社区实战案例验证
 
-## create_agent 多智能体模式（5 种）
+## create_agent 多智能体模式（5 种）`[官方]`
 
 | 模式 | 方式 | 场景 |
 |------|------|------|
@@ -24,9 +26,9 @@ router = create_agent("openai:gpt-5-nano", tools=[
 
 ---
 
-## LangGraph 底层图模式（4 种）
+## `[官方]` LangGraph 底层图模式（4 种）
 
-> 四个官方认可的图模式，每个都有完整代码。源自 `workflows-agents.md`，脱敏处理。
+> 四个官方认可的图模式，每个都有完整代码。源自 `workflows-agents.md`。
 
 ## Router（路由分类）
 
@@ -186,21 +188,26 @@ builder.add_conditional_edges("evaluate", route, {
 from langgraph.types import Command
 
 def sensitive_step(state):
+    """interrupt() 函数 → 抛出 GraphInterrupt，暂停执行"""
     if needs_review(state):
-        return Command(interrupt={
+        approved = interrupt({
             "action": "review_required",
             "data": state["pending_action"],
-            "reason": "该操作需要人工确认"
+            "reason": "该操作需要人工确认",
         })
+        # 客户端用 Command(resume=...) 恢复后，interrupt() 返回 resume 值
+        if not approved:
+            return {"blocked": True}
     return {"approved": True}
 
-# 调用方
+# 调用方 — 首次触发中断
 result = graph.invoke({"input": ...})
-# 检查中断
-if result.interrupts:
-    for interrupt in result.interrupts:
-        print(interrupt.value)  # 展示给审核人
-    # 审核后恢复
+# 检查中断: result["__interrupt__"]
+if "__interrupt__" in result:
+    interrupt_info = result["__interrupt__"]
+    print(interrupt_info[0].value)  # 展示给审核人
+
+    # 审核后恢复（同一 thread_id）
     result = graph.invoke(
         Command(resume={"approved": True}),
         config={"configurable": {"thread_id": "same-thread"}}
@@ -221,6 +228,79 @@ agent.invoke(Command(resume={"approved": True}), config=config)
 ```
 
 **选择：** 方案 A 更白盒、可定制审计日志。方案 B 更简洁。审计场景推荐方案 A。
+
+---
+
+## `[社区]` 流式输出最佳实践
+
+### stream_events v3 vs stream v2
+
+| 维度 | `stream(stream_mode=...)` | `stream_events(version="v3")` |
+|------|------|------|
+| 返回类型 | generator 混合所有事件 | `Stream` 对象，按类型投影 |
+| 业务分发 | 按 mode/type 手写 if/elif | 读对应属性 iterator |
+| 多 LLM token 源 | 混在一起，需手动区分 | event 自带来源字段 |
+| 推荐场景 | 旧项目兼容 | **新项目默认** |
+
+```python
+# v3 — 类型投影
+stream = agent.stream_events(
+    {"messages": [{"role": "user", "content": "..."}]},
+    version="v3",
+)
+for event in stream:
+    text = event.get("text")            # 文本 token
+    reasoning = event.get("reasoning")  # 思考过程
+    tool_calls = event.get("tool_calls")  # 工具调用
+    output = event.get("output")        # 最终输出
+```
+
+### 工具内自定义进度事件
+
+```python
+@tool
+def long_task(query: str, runtime: ToolRuntime) -> str:
+    runtime.stream_writer({"type": "progress", "step": "fetching", "pct": 0})
+    data = fetch(query)
+    runtime.stream_writer({"type": "progress", "step": "done", "pct": 100})
+    return process(data)
+
+# app 层接收
+for mode, chunk in agent.stream({...}, stream_mode=["custom"], version="v2"):
+    print(f"Progress: {chunk}")  # {type: "progress", step: "fetching", pct: 0}
+```
+
+> ⚠️ `stream_writer` 只在 `stream_mode="custom"` + `version="v2"` 中可见。
+
+---
+
+## `[社区]` 多智能体选型：Subagents vs Handoffs
+
+选择错误会导致：主 agent 拿不到子 agent 输出，或子 agent 无法直接与用户对话。
+
+| 需求 | 选型 |
+|------|------|
+| 主 agent 需要子 agent 结果来决策下一步 | **Subagents**（同步调用） |
+| 子 agent 需干净上下文，不污染主对话 | **Subagents**（上下文隔离） |
+| 多领域（日历/邮件/CRM）集中路由 | **Subagents** |
+| 客服流程：收集保修ID → 退款，按顺序解锁 | **Handoffs** |
+| 不同阶段需要不同 system prompt 和工具 | **Handoffs** |
+| 子 agent 直接与用户对话，状态跨轮保持 | **Handoffs** |
+
+**Subagents** — 主 agent 把子 agent 当 tool 调用，每次从干净上下文开始，结果返回主 agent。
+**Handoffs** — 一个 tool 更新状态变量（如 `active_agent`），当前活跃 agent 直接接管用户对话。
+
+```python
+# Subagents 模式
+agent = create_agent(model, tools=[...],
+    middleware=[SubAgentMiddleware(subagents=[researcher, coder])])
+
+# Handoffs 模式 — 通过 Command(goto=...) 切换
+def handoff_to_expert(state):
+    return Command(goto="expert_agent", graph=Command.PARENT)
+```
+
+> 完整多智能体代码 → `references/api-reference.md` §多智能体
 
 ---
 
@@ -250,6 +330,6 @@ graph = builder.compile(checkpointer=SqliteSaver.from_conn_string("state.db"))
 
 ### 中断/恢复
 ```python
-Command(interrupt={"type": "review", "data": state["plan"]})           # 中断
+interrupt({"type": "review", "data": state["plan"]})  # 中断
 graph.invoke(Command(resume={"approved": True}), config={"configurable": {"thread_id": "xxx"}})  # 恢复
 ```

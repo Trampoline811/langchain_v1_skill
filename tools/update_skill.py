@@ -3,6 +3,7 @@ LangChain Skill 一键更新工具
 
 用法:
   python update_skill.py              # 全量：拉取文档 → 清洗 → 提示更新
+  python update_skill.py --check     # 轻量检测：对比 llms.txt 看有没有新页面
   python update_skill.py --docs-only  # 只拉取+清洗文档
   python update_skill.py --test-only  # 只跑盲测（需手动提供测试代码）
   python update_skill.py --package   # 打包上次结果到日期文件夹
@@ -26,12 +27,12 @@ from urllib.request import urlopen, Request
 from urllib.error import HTTPError
 
 # ── 路径配置 ────────────────────────────────────────────
-ROOT = Path(__file__).parent
-DOCS_DIR = ROOT / "langchain_docs"
-RAW_DIR = DOCS_DIR / ".raw"
-SKILL_DIR = Path("E:/AI_skill/langchain-v1")
-URLS_FILE = DOCS_DIR / "urls.md"
-CACHE_FILE = ROOT / ".docs_cache.json"
+ROOT = Path(__file__).parent.parent    # 项目根目录
+DOCS_DIR = ROOT / "docs" / "official"   # 官方文档下载目标
+RAW_DIR = DOCS_DIR / ".raw"           # 原始 .mdx 缓存
+SKILL_DIR = ROOT / "skills"           # skills 目录
+URLS_FILE = ROOT / "tools" / "urls.md"  # URL 源清单
+CACHE_FILE = ROOT / ".docs_cache.json"  # SHA256 缓存
 
 GITHUB_RAW_BASE = "https://raw.githubusercontent.com/langchain-ai/docs/main/src/oss"
 
@@ -210,6 +211,78 @@ def diff_docs():
 
 
 # ═══════════════════════════════════════════════════════
+# 2.5 轻量检测（只对比 URL 清单，不下载）
+# ═══════════════════════════════════════════════════════
+
+LLMS_TXT_URL = "https://docs.langchain.com/llms-full.txt"
+
+
+def fetch_llms_txt() -> set[str] | None:
+    """拉取官方 llms.txt，提取所有 oss/python/ URL"""
+    try:
+        req = Request(LLMS_TXT_URL, headers={"User-Agent": "LangChainSkillUpdater/1.0"})
+        with urlopen(req, timeout=60) as resp:
+            text = resp.read().decode("utf-8")
+    except Exception as e:
+        print(f"  ERROR 拉取 llms-full.txt 失败: {e}")
+        return None
+
+    import re
+    # llms-full.txt 中 URL 格式: https://docs.langchain.com/oss/python/langchain/overview
+    # 可能带 #fragment，需要去掉
+    urls = set(re.findall(r'https://docs\.langchain\.com/oss/python/[^\s)]+', text))
+    # 去掉 # 片段，去重
+    urls = {u.split('#')[0].rstrip('/') for u in urls}
+    return urls
+
+
+def check_llms():
+    """对比 llms.txt 和 urls.md，输出新增/删除的页面"""
+    print("=" * 60)
+    print("  Check: 检测官方文档变更 (只对比 URL，不下载)")
+    print("=" * 60)
+
+    print(f"\n  拉取 {LLMS_TXT_URL} ...", end=" ", flush=True)
+    live_urls = fetch_llms_txt()
+    if live_urls is None:
+        return None
+
+    print(f"{len(live_urls)} 个页面")
+
+    current_urls = set()
+    if URLS_FILE.exists():
+        current_urls = set(load_urls())
+
+    new_urls = live_urls - current_urls
+    removed_urls = current_urls - live_urls
+    common = live_urls & current_urls
+
+    print(f"\n  ┌─ 当前追踪: {len(current_urls)} 个")
+    print(f"  ├─ 官方现存: {len(live_urls)} 个")
+    print(f"  ├─ 未变化:   {len(common)} 个")
+    print(f"  ├─ [NEW] 新增:  {len(new_urls)} 个")
+    print(f"  └─ [DEL] 移除:  {len(removed_urls)} 个")
+
+    if new_urls:
+        print(f"\n  [NEW] 需要添加到 urls.md 的新页面:")
+        for url in sorted(new_urls):
+            name = url.replace("https://docs.langchain.com/oss/python/", "")
+            print(f"     {name}")
+            print(f"     {url}")
+
+    if removed_urls:
+        print(f"\n  [DEL] 官方已移除的页面 (可从 urls.md 删除):")
+        for url in sorted(removed_urls):
+            name = url.replace("https://docs.langchain.com/oss/python/", "")
+            print(f"     {name}")
+
+    if not new_urls and not removed_urls:
+        print(f"\n  [OK] urls.md 与官方完全同步，无新增也无删除")
+
+    return {"new": len(new_urls), "removed": len(removed_urls), "total": len(live_urls)}
+
+
+# ═══════════════════════════════════════════════════════
 # 3. 功能测试
 # ═══════════════════════════════════════════════════════
 
@@ -219,7 +292,7 @@ def run_tests():
     print("  Step 3: 功能测试")
     print("=" * 60)
 
-    test_script = ROOT / "resume_agent.py"
+    test_script = ROOT / "tests" / "resume_agent.py"
     if not test_script.exists():
         print("  resume_agent.py 不存在，跳过")
         return False
@@ -256,12 +329,12 @@ def package(date_str: str = None):
     pkg_dir = ROOT / f"update_{date_str}"
     pkg_dir.mkdir(parents=True, exist_ok=True)
 
-    # 复制 skill 文件
-    shutil.copytree(SKILL_DIR, pkg_dir / "langchain-v1", dirs_exist_ok=True)
+    # 复制所有 skill 文件
+    shutil.copytree(SKILL_DIR, pkg_dir / "skills", dirs_exist_ok=True)
 
     # 复制测试文件
     for f in ["resume_agent.py", "sample_resume.txt", "blind_test_analysis.md"]:
-        src = ROOT / f
+        src = ROOT / "tests" / f
         if src.exists():
             shutil.copy2(src, pkg_dir / f)
 
@@ -291,7 +364,9 @@ def package(date_str: str = None):
 def main():
     args = set(sys.argv[1:])
 
-    if "--docs-only" in args:
+    if "--check" in args:
+        check_llms()
+    elif "--docs-only" in args:
         sync_docs()
         diff_docs()
     elif "--test-only" in args:

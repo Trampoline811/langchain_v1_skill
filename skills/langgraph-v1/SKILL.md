@@ -131,17 +131,20 @@ def workflow(input: str) -> str:
 
 ```python
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.checkpoint.sqlite import SqliteSaver, AsyncSqliteSaver
+from langgraph.checkpoint.postgres import PostgresSaver, AsyncPostgresSaver
 
 # 开发
 checkpointer = InMemorySaver()
 
-# 本地
+# 本地（跨重启持久化）
 checkpointer = SqliteSaver.from_conn_string("checkpoints.db")
 
-# 生产
+# 生产（PostgreSQL）
 checkpointer = PostgresSaver.from_conn_string("postgresql://...")
+
+# 自定义序列化（pickle fallback）
+checkpointer = InMemorySaver(serde=JsonPlusSerializer(pickle_fallback=True))
 
 # 使用
 config = {"configurable": {"thread_id": "unique-thread-id"}}
@@ -154,6 +157,68 @@ graph.invoke({"messages": [...]}, config)
 - 对话历史跨轮次持久化
 - Thread-level 限制（`ModelCallLimitMiddleware.thread_limit`）
 - Time travel 调试
+- 状态回放与审计（`graph.get_state(config)` / `graph.get_state_history(config)`）
+
+**关键操作：**
+
+```python
+# 查看当前状态
+snapshot = graph.get_state(config)
+print(snapshot.values)     # State 内容
+print(snapshot.next)       # 下一个待执行节点
+print(snapshot.metadata)   # {"step": N, "source": "loop", ...}
+
+# 查看状态历史
+history = list(graph.get_state_history(config))
+# history[0] → 最新, history[-1] → 最早
+
+# 从历史 checkpoint 重播
+graph.invoke(None, config)  # 从当前状态继续执行
+```
+
+### 4.1 Store（长期记忆 / 跨线程共享）
+
+> LangGraph Store = 跨 thread 的 key-value 持久化。不同于 checkpointer（单线程状态），Store 让不同对话共享数据。
+
+```python
+from langgraph.store.memory import InMemoryStore
+from langgraph.store.postgres import PostgresStore
+
+store = InMemoryStore()
+graph = builder.compile(checkpointer=checkpointer, store=store)
+
+# 在节点内通过 config 访问 store
+def my_node(state, config):
+    store = config["configurable"].get("store")  # 或 injected_store
+    # 写入
+    store.put(("users", "prefs"), "user-123", {"theme": "dark"})
+    # 搜索（语义搜索支持）
+    memories = store.search(("users",), query="theme preference")
+    # 列出命名空间
+    namespaces = store.list_namespaces()
+
+# 生产环境
+store = PostgresStore.from_conn_string("postgresql://...")
+# 支持语义搜索 — 自动索引嵌入向量
+```
+
+---
+
+### 4.2 Time Travel（时间旅行调试）
+
+```python
+# 查看完整状态历史
+history = list(graph.get_state_history(config))
+
+# 从历史某个 checkpoint 重播
+past_config = history[-3].config  # 倒数第 3 个 checkpoint
+graph.invoke(None, past_config)   # 从该点重新执行
+
+# 直接修改状态后继续
+from langgraph.types import Interrupt
+graph.update_state(config, {"messages": [new_message]})
+graph.invoke(None, config)  # 从修改后的状态继续
+```
 
 ---
 
@@ -181,24 +246,32 @@ for event in graph.stream_events({"messages": [...]}, config, version="v3"):
 ## 6. Human-in-the-Loop（中断/恢复）
 
 ```python
-from langgraph.types import Command
+from langgraph.types import Command, interrupt
 
-# 图中断
+# 图中断 — 节点内调用 interrupt() 函数
 def approval_node(state):
-    return Command(interrupt={
+    """interrupt() 抛出 GraphInterrupt → 执行暂停，返回值发回客户端"""
+    reason = interrupt({
         "action": "review",
         "data": state["pending"],
-        "reason": "人工审批"
+        "reason": "人工审批",
     })
+    # 客户端用 Command(resume=...) 恢复后，interrupt() 返回 resume 值
+    if reason.get("approved"):
+        return {"status": "approved"}
+    return {"status": "rejected"}
 
 # 首次调用 → 触发中断
-result = graph.invoke({"input": "delete"}, config={"configurable": {"thread_id": "t1"}})
-# result.interrupts → [GraphInterrupt(...)]
+result = graph.invoke(
+    {"input": "delete"},
+    config={"configurable": {"thread_id": "t1"}}
+)
+# result["__interrupt__"] → (Interrupt(value={...}, id='...'),)
 
-# 审批后恢复
+# 审批后恢复（同一 thread_id）
 result = graph.invoke(
     Command(resume={"approved": True}),
-    config={"configurable": {"thread_id": "t1"}}  # 同一 thread_id
+    config={"configurable": {"thread_id": "t1"}},
 )
 ```
 
@@ -227,12 +300,12 @@ graph = (
 
 ---
 
-## 8. 容错
+## 8. 容错与超时
 
 ```python
-# 节点级重试
 from langgraph.types import RetryPolicy
 
+# 节点级重试 + 超时
 builder.add_node("api_call", api_node,
     retry=RetryPolicy(
         max_attempts=3,
@@ -241,6 +314,35 @@ builder.add_node("api_call", api_node,
         retry_on=(ConnectionError, TimeoutError),
     )
 )
+
+# 注意: compile() 不接受 retry= 参数（当前版本），只在 add_node(retry=...) 节点级设置
+
+# 超时控制
+builder.add_node("slow_task", slow_node,
+    timeout=30.0,  # 节点最长执行 30 秒
+    idle_timeout=10.0,  # 无 stream 输出超过 10 秒 → 中断
+)
+
+# 错误处理 — 节点内捕获并路由
+def resilient_node(state) -> Command:
+    try:
+        result = call_external_api(state)
+        return Command(update={"data": result}, goto="next")
+    except Exception:
+        return Command(goto="fallback")  # 失败不崩溃，路由到备用节点
+```
+
+**重试状态检查：**
+
+```python
+# 节点内检查当前是第几次尝试
+from langgraph.types import get_retry_state
+
+def api_node(state):
+    retry_state = get_retry_state()
+    if retry_state and retry_state.attempt > 1:
+        print(f"Retry attempt {retry_state.attempt}/{retry_state.max_attempts}")
+    ...
 ```
 
 ---
@@ -266,6 +368,9 @@ builder.add_node("api_call", api_node,
 3. **State 用 TypedDict** — 字段尽量少，用 `Annotated[list, operator.add]` 安全汇聚
 4. **checkpointer 不可缺** — 持久化 / HITL / 多轮对话都依赖它
 5. **流式直接用 `stream_mode=["messages"]`** — 打字机效果最简单的方式
+6. **需要详细 API →** `references/graph-api-reference.md`
+7. **持久化配置 →** `references/checkpointer-store-guide.md`
+8. **容错弹性 →** `references/fault-tolerance-guide.md`
 
 ---
 
@@ -360,3 +465,17 @@ def route_critique(state) -> Literal["draft", END]:
 ```
 
 **原则**：**先廉价后昂贵**。程序化检查能拦住的（格式错、缺少代码块、多代码块）绝不浪费 LLM 调用。
+
+---
+
+## 12. 社区案例
+
+> LangGraph 在以下场景中是**不可替代的**底层 Runtime：
+
+| 场景 | 为什么必须 LangGraph | 参考 |
+|------|---------------------|------|
+| 多步文档审核（OCR→提取→审查→报告） | 节点式流程 + HITL 中断审批 | [文档审核Agent](docs/community/cases/LangChain%20v1.0%20文档审核类Agent开发实战.md) |
+| 自动数据分析（读取→清洗→分析→可视化） | 并行分支 + 条件路由 | [数据分析Agent](docs/community/cases/全自动数据分析可视化Agent系统.md) |
+| 前后端分离的全栈 Agent | Graph 前端推送 custom stream channels | [mini ChatGPT](docs/community/cases/Ep.01%20从零搭建mini%20ChatGPT（上）.md) |
+
+> 💡 上述案例虽然表层使用 `create_agent()` / `create_deep_agent()`，**底层全部跑在 LangGraph StateGraph 上**。当需要自定义图拓扑时，用本章的 Graph API / Functional API 替换高层封装。

@@ -1,5 +1,15 @@
 # deepagents-v1 更新日志
 
+## 2026-06-14 (Step 5b — 官方文档同步)
+
+- **大幅扩展** §2.5 技能（Skills）节：新增 Interpreter Skills（可执行 Python 模块）、技能权限系统（shared/limited/read_only/editable）、运行时动态加载（`get_skills(runtime)` 回调）、命名空间技能、子 Agent 专属技能、Sandbox 脚本技能
+- **来源** 官方 `deepagents-skills.md` 从 542 行扩展至 1012 行 (+470 行)，遵循 [Agent Skills 规范](https://agentskills.io/specification)
+
+## 2026-06-14 (第二次更新)
+
+- **新增** §10 实战案例速查：全自动数据分析 Agent + 文档审核 Agent 端到端代码示例 + 案例场景对照表
+- **来源** 社区文档 `docs/community/cases/`（数据分析Agent、文档审核Agent、mini ChatGPT、OCR PDF）
+
 ## 2026-06-14
 
 - **新增** 定位章节：LangChain 官方定义的 Agent Harness 定位；补 Harness/Framework/Runtime 精装房/毛坯房/地基类比；选型边界顶部加官方术语引用

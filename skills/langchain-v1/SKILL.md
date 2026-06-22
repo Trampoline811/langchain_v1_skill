@@ -6,7 +6,7 @@ description: LangChain v1.0 (2025.11+) 代码生成规范。强制使用 create_
 # LangChain v1.0 编码规范
 
 > v1.0 只有四个概念：**model、agent、tool、middleware**。没有 chain。
-> 本 skill 负责 **「怎么写」**。选型决策 → `references/decision-guide.md` | 完整 API → `references/api-reference.md` | 迁移 → `references/migration-comparison.md`
+> 本 skill 负责 **「怎么写」**。选型决策 → `references/decision-guide.md` | 完整 API → `references/api-reference.md` | 迁移 → `references/migration-comparison.md` | 踩坑 → `references/common-pitfalls.md` | 国产模型 → `references/cn-model-integration.md` | Trace排障 → 独立 skill `/langsmith-trace`
 
 ## 定位：Agent Framework
 
@@ -55,7 +55,7 @@ from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 
 agent = create_agent(
-    model="openai:gpt-5.4",
+    model="openai:gpt-5.5",
     tools=[my_tool],
     system_prompt="You are a helpful assistant",
 )
@@ -91,7 +91,9 @@ agent = create_agent(
 )
 ```
 
-**model 格式**: `"provider:model_name"` — 如 `"openai:gpt-5.4"` / `"claude-sonnet-4-6"` / `"google_genai:gemini-2.5-flash"` / `"ollama:llama3.2"`
+**model 格式**: `"provider:model_name"` — 如 `"openai:gpt-5.5"` / `"claude-sonnet-4-6"` / `"google_genai:gemini-2.5-flash"` / `"ollama:llama3.2"`
+
+> 国产模型（DeepSeek/Qwen/GLM）接入注意事项 → `references/cn-model-integration.md`
 
 ---
 
@@ -102,7 +104,7 @@ from langchain.chat_models import init_chat_model
 
 # 基础
 model = init_chat_model("claude-sonnet-4-6")
-model = init_chat_model("openai:gpt-5.4", temperature=0.5, max_tokens=4096)
+model = init_chat_model("openai:gpt-5.5", temperature=0.5, max_tokens=4096)
 
 # 关键方法
 model.invoke("prompt")                    # 同步调用
@@ -112,7 +114,7 @@ model.with_structured_output(Schema)      # 绑定结构化输出
 
 # 速率限制
 from langchain_core.rate_limiters import InMemoryRateLimiter
-model = init_chat_model("gpt-5.4", rate_limiter=InMemoryRateLimiter(requests_per_second=0.1))
+model = init_chat_model("gpt-5.5", rate_limiter=InMemoryRateLimiter(requests_per_second=0.1))
 ```
 
 ---
@@ -197,9 +199,41 @@ def set_user_name(name: str, runtime: ToolRuntime) -> Command:
 | `ModelFallbackMiddleware` | 模型降级链 | `ModelFallbackMiddleware(fast, slow, fallback)` |
 | `TodoListMiddleware` | 复杂任务自动规划 | 无需配置 |
 | `ModelCallLimitMiddleware` | 限制模型调用次数 | `run_limit=100` |
+| `ToolCallLimitMiddleware` | 限制单次工具调用次数 | `max_tool_calls=20` |
 | `ContextEditingMiddleware` | 清理旧 tool 结果节省 token | `edits=[ClearToolUsesEdit(trigger=100000)]` |
+| `ShellToolMiddleware` | 暴露持久化 shell 给 Agent | `workspace_root="/workspace", execution_policy=...` |
+| `FilesystemFileSearchMiddleware` | Glob + Grep 文件搜索 | `root_path="/workspace", use_ripgrep=True` |
+| `ProviderToolSearchMiddleware` | 服务端工具按需搜索 | 无需配置 |
+| `LLMToolSelectorMiddleware` | LLM 预选相关工具再调用主模型 | `model=...` |
 
-### 5.2 自定义中间件模式
+### 5.2 Shell 与 File Search 示例
+
+```python
+from langchain.agents import create_agent
+from langchain.agents.middleware import (
+    ShellToolMiddleware, HostExecutionPolicy,
+    FilesystemFileSearchMiddleware,
+)
+
+agent = create_agent(
+    model="claude-sonnet-4-6",
+    tools=[...],
+    middleware=[
+        ShellToolMiddleware(
+            workspace_root="/workspace",
+            execution_policy=HostExecutionPolicy(),
+        ),
+        FilesystemFileSearchMiddleware(
+            root_path="/workspace",
+            use_ripgrep=True,
+        ),
+    ],
+)
+```
+
+### 5.3 自定义中间件模式
+
+> **钩子速查**: `@before_model` 准备 → `@wrap_model_call` 控制 → `@after_model` 审查 → `@after_agent` 收尾
 
 ```python
 from langchain.agents.middleware import (
@@ -231,6 +265,70 @@ class LoggingMiddleware(AgentMiddleware):
 agent = create_agent(model, tools=tools, middleware=[add_context, log_response])
 ```
 
+### 5.4 进阶中间件模式（来自社区实战）
+
+**before_model — 上下文注入 / 消息裁剪**
+
+```python
+@before_model
+def inject_user_context(state, runtime) -> dict | None:
+    """每次模型调用前注入用户偏好和权限信息"""
+    prefs = runtime.store.get(("user_prefs",), runtime.context.user_id)
+    if prefs:
+        return {"system_prompt": f"User preferences: {prefs}"}
+    return None
+
+@before_model
+def trim_messages(state, runtime) -> dict | None:
+    """消息过多时裁剪最早的消息，保留最近15条"""
+    msgs = state.get("messages", [])
+    if len(msgs) > 20:
+        keep = msgs[-15:]
+        return {"messages": keep}
+    return None
+```
+
+**wrap_model_call — 动态模型路由 / 重试熔断**
+
+```python
+@wrap_model_call
+def dynamic_model_router(request, handler):
+    """简单任务用 cheap 模型，复杂任务切 powerful 模型"""
+    if len(request.messages) < 5:
+        request.model = init_chat_model("deepseek:deepseek-chat")
+    else:
+        request.model = init_chat_model("deepseek:deepseek-reasoner")
+    return handler(request)  # 必须调用 handler 继续执行
+
+@wrap_model_call
+def retry_with_backoff(request, handler):
+    """模型调用失败重试3次，指数退避"""
+    import time
+    for attempt in range(3):
+        try:
+            return handler(request)
+        except Exception:
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+    raise RuntimeError("Model call failed after 3 retries")
+```
+
+**after_model — 输出校验 / 安全审查**
+
+```python
+@after_model
+def validate_structure(state, runtime) -> dict | None:
+    """检查模型输出的 tool_calls 是否完整"""
+    msgs = state.get("messages", [])
+    if msgs and hasattr(msgs[-1], "tool_calls") and msgs[-1].tool_calls:
+        for tc in msgs[-1].tool_calls:
+            if not tc.get("name"):
+                return {"messages": [AIMessage(content="Tool call missing name, retry")]}
+    return None
+```
+
+> **最佳实践**：3 个钩子按需组合，before_model 做**准备**，wrap_model_call 做**控制**，after_model 做**审查**。简单场景用一个，复杂场景链式叠加。
+
 ---
 
 ## 6. 结构化输出
@@ -245,7 +343,7 @@ class ContactInfo(BaseModel):
     phone: str = Field(description="Phone number")
 
 # 方式1: 直接传 schema（自动选策略）
-agent = create_agent(model="gpt-5.4", tools=[...], response_format=ContactInfo)
+agent = create_agent(model="gpt-5.5", tools=[...], response_format=ContactInfo)
 
 # 方式2: 显式 ToolStrategy（兼容所有模型）
 agent = create_agent(model=..., response_format=ToolStrategy(
@@ -254,7 +352,7 @@ agent = create_agent(model=..., response_format=ToolStrategy(
 ))
 
 # 方式3: ProviderStrategy（OpenAI/Anthropic 原生支持，最高可靠性）
-agent = create_agent(model="gpt-5.4", response_format=ProviderStrategy(ContactInfo))
+agent = create_agent(model="gpt-5.5", response_format=ProviderStrategy(ContactInfo))
 
 # 获取结果
 result = agent.invoke({"messages": [...]})
@@ -424,3 +522,80 @@ result = agent.invoke(Command(resume={"type": "approve"}),
 6. **图模式 / 多智能体** → `references/patterns.md`
 7. **MCP 集成** → `references/mcp-integration.md`
 8. **选型决策（该不该用 LC）** → `references/decision-guide.md`
+9. **踩坑排障** → `references/common-pitfalls.md`
+10. **国产模型（DeepSeek/Qwen/GLM）** → `references/cn-model-integration.md`
+11. **LangSmith Trace 排障** → 独立 skill `/langsmith-trace`
+
+---
+
+## 13. 部署与运维
+
+### 13.1 开发工具套件
+
+LangChain 1.0 配套三个企业级工具，形成「监控 → 调试 → 部署」完整链路：
+
+| 工具 | 用途 | 关键能力 |
+|------|------|---------|
+| **LangSmith** | 全生命周期监控平台 | 调用链追踪、批量评估、Prompt 版本管理、流量监控 |
+| **LangGraph Studio** | 可视化 IDE + 调试 | 拖拽构建 Graph、节点配置、实时测试、一键部署 |
+| **LangGraph CLI** | 命令行部署工具 | `langgraph dev` 本地调试、`langgraph deploy` 部署到 LangGraph Cloud |
+
+### 13.2 FastAPI 部署模板
+
+```python
+# server.py — 生产就绪的 Agent API 服务
+import uvicorn
+from fastapi import FastAPI
+from pydantic import BaseModel
+from langchain.agents import create_agent
+from langchain.chat_models import init_chat_model
+
+app = FastAPI()
+agent = create_agent(model="deepseek:deepseek-chat", tools=[...])
+
+class ChatRequest(BaseModel):
+    message: str
+    thread_id: str = "default"
+
+@app.post("/chat")
+async def chat(req: ChatRequest):
+    result = await agent.ainvoke(
+        {"messages": [{"role": "user", "content": req.message}]},
+        config={"configurable": {"thread_id": req.thread_id}}
+    )
+    return {"response": result["messages"][-1].content}
+
+# 启动: python server.py 或 uvicorn server:app --host 0.0.0.0 --port 8000
+```
+
+### 13.3 核心依赖清单
+
+```text
+# 生产部署最小依赖
+langchain>=1.0.0
+langchain-core
+langchain-community
+langgraph                      # Agent 运行时（create_agent 底层依赖）
+python-dotenv                  # .env 环境变量
+fastapi                        # Web 框架
+uvicorn                        # ASGI 服务器
+pydantic                       # 数据校验
+```
+
+---
+
+## 14. 社区案例速查
+
+> 完整案例源码见 `docs/community/cases/`，以下为速查索引。
+
+| 案例 | 场景 | 涉及 API | 难度 |
+|------|------|---------|:--:|
+| [mini ChatGPT](docs/community/cases/Ep.01%20从零搭建mini%20ChatGPT（上）.md) | 全栈 Agent + MCP 多服务 | `create_agent`, `ChatDeepSeek`, `MultiServerMCPClient`, FastAPI | ⭐⭐ |
+| [MCP Agent 开发](docs/community/cases/LangChain%201.1%20+%20MCP%20Agent开发实战.md) | MCP 协议集成实战 | `create_agent`, MCP 适配器, `langchain-mcp-adapters` | ⭐⭐ |
+| [文档审核 Agent](docs/community/cases/LangChain%20v1.0%20文档审核类Agent开发实战.md) | 合同/票据合规审核 | `create_agent`, 工具编排, OCR, RAG | ⭐⭐⭐⭐ |
+| [OCR 多模态 PDF](docs/community/cases/LangChain1.0%20+%20OCR%20多模态PDF解析实战.md) | 多模态解析 + Agent | `create_agent`, MinerU, DeepSeek-OCR, vLLM | ⭐⭐⭐⭐⭐ |
+| [数据分析 Agent](docs/community/cases/全自动数据分析可视化Agent系统.md) | 自动 EDA + 可视化 | `create_deep_agent`, 文件系统, 代码执行 | ⭐⭐⭐ |
+
+| 教程系列 | 覆盖主题 |
+|---------|---------|
+| [Part 1~6](docs/community/patterns/) | 快速入门 → 模型接入 → 消息/记忆/工具 → Agent 开发 → 部署上线 → 中间件实战 |
