@@ -60,6 +60,35 @@ def url_to_name(url: str) -> str:
     return path.replace("/", "-")
 
 
+def url_to_category(url: str) -> str | None:
+    """URL → 子目录名（langchain/langgraph/deepagents/concepts/contributing/reference）
+
+    URL 路径第一段为类别，单段路径（如 learn、versioning）返回 None → 放根目录
+    """
+    path = url.replace("https://docs.langchain.com/oss/python/", "")
+    parts = path.split("/")
+    return parts[0] if len(parts) > 1 else None
+
+
+def add_frontmatter(text: str, url: str) -> str:
+    """给清洗后的 Markdown 添加 YAML frontmatter（含 fetchedAt 日期）"""
+    from datetime import datetime
+    date_str = datetime.now().strftime("%Y-%m-%d")
+
+    # 如果已有 frontmatter，只在末尾加 fetchedAt（如果尚无）
+    if text.startswith("---"):
+        if "fetchedAt:" in text[:200]:
+            return text  # 已有日期，不动
+        # 在第一个 --- 闭合前插入
+        end = text.find("\n---", 3)
+        if end > 0:
+            return text[:end] + f"\nfetchedAt: {date_str}" + text[end:]
+
+    # 无 frontmatter — 创建
+    name = url_to_name(url)
+    return f"---\ntitle: {name}\nfetchedAt: {date_str}\n---\n\n{text}"
+
+
 def fetch_mdx(raw_url: str) -> tuple[str | None, int]:
     """拉取单个 .mdx 文件，返回 (内容, 状态码)"""
     try:
@@ -117,7 +146,11 @@ def save_cache(cache: dict):
 
 
 def sync_docs():
-    """全量同步文档"""
+    """全量同步文档 — 输出到类别子目录（langchain/deepagents/langgraph/concepts/...）
+
+    文件名: {category}/{category}-{page}.md
+    根目录文件（无类别前缀）: {page}.md
+    """
     print("=" * 60)
     print("  Step 1: 同步官方文档")
     print("=" * 60)
@@ -132,10 +165,19 @@ def sync_docs():
 
     for i, url in enumerate(urls):
         name = url_to_name(url)
+        category = url_to_category(url)
         raw_url = url_to_raw(url)
-        out_path = DOCS_DIR / f"{name}.md"
 
-        print(f"  [{i+1}/{len(urls)}] {name}...", end=" ", flush=True)
+        # 确定输出路径：有类别→子目录，无类别→根目录
+        if category:
+            cat_dir = DOCS_DIR / category
+            cat_dir.mkdir(parents=True, exist_ok=True)
+            out_path = cat_dir / f"{name}.md"
+        else:
+            out_path = DOCS_DIR / f"{name}.md"
+
+        label = f"{category}/{name}" if category else name
+        print(f"  [{i+1}/{len(urls)}] {label}...", end=" ", flush=True)
 
         content, status = fetch_mdx(raw_url)
         if content is None:
@@ -144,7 +186,7 @@ def sync_docs():
             print(f"FAIL ({status})")
             continue
 
-        clean = clean_mdx(content)
+        clean = add_frontmatter(clean_mdx(content), url)
         h = hash_content(clean)
         new_cache[name] = h
 
@@ -193,12 +235,20 @@ def diff_docs():
 
     changed_critical = []
     for name in CRITICAL_FILES:
-        path = DOCS_DIR / f"{name}.md"
-        if path.exists():
-            content = path.read_text(encoding="utf-8")
-            h = hash_content(content)
-            if name in cache and cache[name] != h:
-                changed_critical.append(name)
+        # 在根目录和子目录中查找
+        found = False
+        search_dirs = [DOCS_DIR] + [d for d in DOCS_DIR.iterdir() if d.is_dir() and not d.name.startswith('.')]
+        for search_dir in search_dirs:
+            path = search_dir / f"{name}.md"
+            if path.exists():
+                found = True
+                content = path.read_text(encoding="utf-8")
+                h = hash_content(content)
+                if name in cache and cache[name] != h:
+                    changed_critical.append(name)
+                break
+        if not found and name not in cache:
+            changed_critical.append(name)
 
     if changed_critical:
         print(f"  !! 关键文件已变更，需更新 skill:")
