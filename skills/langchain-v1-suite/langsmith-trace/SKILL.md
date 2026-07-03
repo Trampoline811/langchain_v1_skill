@@ -6,7 +6,7 @@ description: LangSmith Trace 排障与观测。覆盖 CLI 安装、自动 Trace 
 # LangSmith Trace 排障指南
 
 > LangSmith 是 LangChain 生态的**全生命周期观测平台**。本 skill 负责 **「怎么查」**——Trace 采集、CLI 排障、命令速查。
-> 写代码 → `/langchain-v1` | 自定义图 → `/langgraph-v1` | 电池包 → `/deepagents-v1` | 选型 → `/agent-sdk-router`
+> 写代码 → 父技能路由到 `langchain-v1` | 自定义图 → `langgraph-v1` | 电池包 → `deepagents-v1`
 
 ## ⚠️ 安全警告
 

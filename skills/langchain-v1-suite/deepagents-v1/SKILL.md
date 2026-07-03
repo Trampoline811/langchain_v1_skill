@@ -13,7 +13,7 @@ description: Deep Agents 开箱即用 agent harness 代码生成规范。内置�
 > LangChain 官方定义：DeepAgents 是 **Agent Harness**（代理即用电池包）——比 Framework 更高层，"a general purpose version of Claude Code"。
 > LangChain 是 Agent Framework（抽象层），LangGraph 是 Agent Runtime（基础设施层），DeepAgents 是 Agent Harness（预组装层）。
 > — Harrison Chase, "[Agent Frameworks, Runtimes, and Harnesses- oh my!](https://www.langchain.com/blog/agent-frameworks-runtimes-and-harnesses-oh-my)" (2025.10)
-> 💡 不确定用哪个？→ `/agent-sdk-router`（LangChain 官方三选一决策表）
+> 💡 不确定用哪个？→ 回到父技能 `skills/langchain-v1-suite/SKILL.md` 查路由决策表
 
 ## ⚠️ 选型边界：什么时候**不该**用 Deep Agents
 
