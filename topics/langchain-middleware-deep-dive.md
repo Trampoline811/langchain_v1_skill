@@ -436,5 +436,6 @@ class PermissionToolFilter(AgentMiddleware):
 |----------|---------|
 | `topics/langchain-skills-deep-dive.md` §五 | Skills DIY 模式 = 中间件动态提示词注入实战 |
 | `topics/multi-agent-routing-comparison.md` §4.3 | Handoffs 模式 = 中间件状态驱动配置切换实战 |
+| `topics/langchain-hitl-deep-dive.md` §四/§五 | HumanInTheLoopMiddleware 详解 + DeepAgents 三层堆栈条件激活 |
 
-> **整理日期**: 2026-07-03
+> **整理日期**: 2026-07-09
