@@ -1,5 +1,13 @@
 # deepagents-v1 更新日志
 
+## 2026-07-09 — Phase A 流程重跑：补文件系统/任务规划/长期记忆/HITL（沧海九粟 ch03/04/08/09）
+
+- **大幅扩展** §2.1 文件系统：BackendProtocol 6 方法完整代码骨架（S3Backend 示例）、GuardedBackend（PolicyWrapper 继承模式）、后端选择指南表
+- **大幅扩展** §2.6 中间件装配：write_todos 任务数据结构（content/status/pending→in_progress→completed）+ 状态流转、TodoListMiddleware 自定义配置（system_prompt/tool_description）、SummarizationMiddleware 触发详解 + 与 TodoListMiddleware 协同机制
+- **大幅扩展** §2.4 记忆：两种记忆对比表（Checkpointer vs Store）、基础用法（CompositeBackend 路由）、三种作用域（Agent/用户/组织级）+ namespace 函数、四种实用场景、记忆六维度设计参考、InMemoryStore→PostgresStore 生产升级路径、最佳实践
+- **大幅扩展** §5 HITL：三种配置值 + 四种决策类型表（approve/edit/reject/respond）+ reject vs respond 区别、条件中断（`when` 谓词）、中断与恢复完整流程代码、批量工具调用处理、子 Agent 独立 HITL 配置、按风险等级分层表
+- **来源** 沧海九粟社区《Deep Agents 实战》第 3、4、8、9 章
+
 ## 2026-06-14 (Step 5b — 官方文档同步)
 
 - **大幅扩展** §2.5 技能（Skills）节：新增 Interpreter Skills（可执行 Python 模块）、技能权限系统（shared/limited/read_only/editable）、运行时动态加载（`get_skills(runtime)` 回调）、命名空间技能、子 Agent 专属技能、Sandbox 脚本技能

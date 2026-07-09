@@ -9,8 +9,9 @@
 
 | 文件 | 专题 | 描述 | 日期 |
 |------|------|------|------|
-| `multi-agent-routing-comparison.md` | 多智能体路由横向对比 | Skills / Subagents / Handoffs / Router 四种模式的架构、性能、选型速查 | 2026-07-02 |
-| `langchain-skills-deep-dive.md` | LangChain Skills 机制深度剖析 | 两层实现路径（LangChain DIY + DeepAgents 内置）、渐进披露原理、文件规范、Interpreter Skills、与 Tools/Memory 边界 | 2026-07-02 |
+| `multi-agent-routing-comparison.md` | 多智能体路由横向对比 | Skills / Subagents / Handoffs / Router 四种模式的架构、性能、选型速查 | 2026-07-09 |
+| `langchain-skills-deep-dive.md` | LangChain Skills 机制深度剖析 | 两层实现路径（LangChain DIY + DeepAgents 内置）、渐进披露原理、文件规范、Interpreter Skills、与 Tools/Memory 边界 | 2026-07-09 |
+| `langchain-middleware-deep-dive.md` | LangChain v1.0 中间件深度剖析 | 钩子系统全景（6 hooks + 14 内置中间件）、自定义中间件 MDA 三层、三大实战模式（动态提示词/状态切换/工具过滤）、与 v0.x Memory/Callbacks 对比 | 2026-07-09 |
 
 ## 扩展规则
 

@@ -183,6 +183,67 @@ FilesystemPermission(operations=["write"], paths=["/policies/**"], mode="deny")
 
 **自定义后端：**实现 `BackendProtocol` 6 个方法（`ls`、`read`、`write`、`edit`、`grep`、`glob`），可接入 S3/Postgres 等任意存储。
 
+```python
+from deepagents.backends.protocol import (
+    BackendProtocol, WriteResult, EditResult, LsResult,
+    ReadResult, GrepResult, GlobResult,
+)
+
+class S3Backend(BackendProtocol):
+    def __init__(self, bucket: str, prefix: str = ""):
+        self.bucket = bucket
+        self.prefix = prefix.rstrip("/")
+
+    def ls(self, path: str) -> LsResult:
+        ...  # 列出对象，返回 FileInfo 列表
+
+    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
+        ...  # 返回 ReadResult(file_data=...) 或 ReadResult(error=...)
+
+    def write(self, file_path: str, content: str) -> WriteResult:
+        ...  # 外部存储后端 files_update=None
+
+    def edit(self, file_path: str, old: str, new: str, replace_all: bool = False) -> EditResult:
+        ...  # 读取 → 替换 → 写回
+
+    def grep(self, pattern: str, path: str = None, glob: str = None) -> GrepResult:
+        ...  # 正则搜索
+
+    def glob(self, pattern: str, path: str = "/") -> GlobResult:
+        ...  # 通配符匹配
+```
+
+**安全策略（PolicyWrapper / GuardedBackend）：**
+
+对需要拦截策略（速率限制、审计日志、内容检查）的场景，继承现有后端覆写方法：
+
+```python
+class GuardedBackend(FilesystemBackend):
+    def __init__(self, *, deny_prefixes: list[str], **kwargs):
+        super().__init__(**kwargs)
+        self.deny_prefixes = [p.rstrip("/") + "/" for p in deny_prefixes]
+
+    def write(self, file_path: str, content: str) -> WriteResult:
+        if any(file_path.startswith(p) for p in self.deny_prefixes):
+            return WriteResult(error=f"写入被拒绝：{file_path}")
+        return super().write(file_path, content)
+
+    def edit(self, file_path: str, old: str, new: str, replace_all: bool = False) -> EditResult:
+        if any(file_path.startswith(p) for p in self.deny_prefixes):
+            return EditResult(error=f"编辑被拒绝：{file_path}")
+        return super().edit(file_path, old, new, replace_all)
+```
+
+**后端选择指南：**
+
+| 场景 | 推荐后端 | 理由 |
+|------|---------|------|
+| 学习和实验 | `StateBackend()`（默认） | 零配置，自动清理 |
+| 本地编程助手 | `FilesystemBackend(root_dir=".")` | 直接操作项目文件 |
+| 需要跨会话记忆 | `CompositeBackend` | 混合临时 + 持久化 |
+| 需要执行代码 | 沙箱后端 | 安全隔离 |
+| 生产部署 | `StoreBackend` 或 `CompositeBackend` | 持久化 + 可伸缩 |
+
 **自动上下文管理（无感知）：**
 - 工具结果 >20K tokens → 自动卸载到文件系统，对话中替换为文件引用 + 前 10 行预览
 - 上下文达窗口 85% → 自动生成结构化摘要，完整记录保存到文件系统
@@ -271,15 +332,104 @@ agent = create_deep_agent(model=model, subagents=[
 
 ### 2.4 记忆（MemoryMiddleware）
 
-```python
-from deepagents.middleware import MemoryMiddleware
+> Deep Agents 将记忆作为一等公民——Agent 以文件形式读写记忆，Backend 控制存储位置。核心机制：**文件路径路由** → `/memories/` 前缀走 StoreBackend 持久化，其他路径走 StateBackend（临时）。
 
-MemoryMiddleware(
-    backend=StateBackend(),
-    sources=["./AGENTS.md"],  # 项目级指令，Agent 启动时自动加载
+**两种记忆对比：**
+
+| 维度 | 短期记忆（Checkpointer） | 长期记忆（Store） |
+|------|----------------------|------------------|
+| **作用域** | 同一 `thread_id` 内 | **跨 thread、跨会话** |
+| **存储层** | LangGraph Checkpointer | LangGraph Store |
+| **开发用** | `MemorySaver`（内存，重启丢失） | `InMemoryStore`（内存，重启丢失） |
+| **生产用** | `PostgresSaver`（DB 持久化） | `PostgresStore`（DB 持久化） |
+| **典型内容** | 消息历史、文件系统状态、任务清单 | 用户偏好、项目背景、累积知识 |
+
+**基础用法：**
+
+```python
+from deepagents import create_deep_agent
+from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+
+agent = create_deep_agent(
+    model=model,
+    memory=["/memories/AGENTS.md"],       # 启动时加载到 system prompt
+    backend=CompositeBackend(
+        default=StateBackend(),            # 临时文件
+        routes={
+            "/memories/": StoreBackend(    # 持久化文件（跨会话）
+                namespace=lambda rt: (rt.server_info.user.identity,),
+            ),
+        },
+    ),
 )
-# 记忆跨会话持久化，写入 store 后下次自动可用
 ```
+
+Agent 的读写完全透明——`write_file("/workspace/draft.txt")` → StateBackend（临时），`write_file("/memories/prefs.md", "简洁代码")` → StoreBackend（下次对话仍可读）。
+
+**三种作用域：**
+
+| 作用域 | namespace 函数 | 可见性 | 典型用途 |
+|--------|---------------|--------|---------|
+| **Agent 级** | `(rt.server_info.assistant_id,)` | 所有用户共享 | 项目背景、技术规范 |
+| **用户级** | `(rt.server_info.user.identity,)` | 仅该用户 | 偏好设置、个人笔记 |
+| **组织级** | `(org_id,)` | 全体成员（通常只读） | 合规策略、公司规范 |
+
+```python
+def agent_namespace(rt):
+    return (rt.server_info.assistant_id,)
+
+def user_namespace(rt):
+    return (rt.server_info.user.identity,)
+
+def org_namespace(rt):
+    return (getattr(rt.context, "org_id", "default-org"),)
+```
+
+**四种实用场景：**
+
+| 场景 | 做法 |
+|------|------|
+| 用户偏好记忆 | `memory=["/memories/preferences.md"]` → Agent 首次对话记住，后续自动加载 |
+| 自我改进 Agent | Agent 记录"上次这个任务踩了什么坑"到 `/memories/lessons.md`，下次避开 |
+| 知识库累积 | 多次研究对话逐渐积累到 `/memories/knowledge/`，形成个人知识库 |
+| 研究项目持续推进 | 同一项目跨多次对话推进，所有中间产物持久化 |
+
+**记忆的六个维度（设计参考）：**
+
+| 维度 | 选项 |
+|------|------|
+| **内容类型** | 情景记忆（过去经历）/ 程序性记忆（Skills）/ 语义记忆（事实） |
+| **作用域** | 用户级 / Agent 级 / 组织级 |
+| **更新策略** | 对话中实时 / 对话间后台整合 |
+| **检索方式** | 启动加载（`memory=`）/ 按需读取（文件系统工具） |
+| **权限控制** | 读写 / 只读（组织策略防注入） |
+| **并发写入** | 多 Agent 同时写同一文件 → last-write-wins |
+
+**生产升级路径：**
+
+```python
+# 开发阶段
+from langgraph.store.memory import InMemoryStore
+store = InMemoryStore()
+
+# 生产阶段
+from langgraph.store.postgres import PostgresStore
+import os
+
+with PostgresStore.from_conn_string(os.environ["DATABASE_URL"]) as store:
+    store.setup()  # 首次自动建表
+    agent = create_deep_agent(
+        model=model,
+        memory=["/memories/AGENTS.md"],
+        store=store,  # ← 传入生产 Store
+        backend=CompositeBackend(
+            default=StateBackend(),
+            routes={"/memories/": StoreBackend(namespace=user_namespace)},
+        ),
+    )
+```
+
+> **最佳实践**：(1) 用描述性路径如 `/memories/project/tech-stack.md` 而非 `/memo.txt`；(2) 用 `memory=` 声明而非在 system_prompt 里手写；(3) 按主题拆分文件；(4) 组织级策略设只读防注入攻击。
 
 ### 2.5 技能（SkillsMiddleware）
 
@@ -459,6 +609,32 @@ agent = create_agent(
 )
 ```
 
+**TodoListMiddleware 自定义配置：**
+
+```python
+from langchain.agents.middleware import TodoListMiddleware
+
+TodoListMiddleware(
+    system_prompt="将任务拆解为可执行的步骤，先写测试再写代码。",
+    tool_description="管理任务列表的工具。每个任务包含 content（内容）和 status（状态）。",
+)
+```
+
+**write_todos 任务数据结构：**
+
+```python
+# 每个任务：{"content": "任务描述", "status": "pending|in_progress|completed"}
+# 状态流转：pending → in_progress → completed
+```
+
+Agent 典型行为：收到复杂任务 → 调用 `write_todos([{...pending...}, ...])` 制定计划 → 逐个执行 `pending→in_progress→completed` → 执行中发现新步骤动态追加。
+
+**SummarizationMiddleware 触发机制：**
+- `trigger=("tokens", 4000)` — 上下文超过 4000 tokens 触发压缩
+- `keep=("messages", 20)` — 保留最近 20 条消息不压缩
+- 压缩时会用 LLM 生成结构化摘要（意图、产出物、下一步），完整原始对话保存到文件系统
+- **与 TodoListMiddleware 协同**：即使对话被压缩，任务清单仍然完整——Agent 知道当前进度
+
 ## 3. 上下文工程（Context Engineering）
 
 Deep Agents 的核心优势：**自动管理上下文窗口**。
@@ -511,20 +687,145 @@ PermissionsMiddleware(
 
 ## 5. Human-in-the-Loop
 
+> Deep Agents 内置 `HumanInTheLoopMiddleware`，通过 `interrupt_on` 参数配置哪些工具需要人工审批。Checkpointer **必须配置**（中断恢复靠它）。
+
+**基础用法：**
+
 ```python
-from langchain.agents.middleware import HumanInTheLoopMiddleware
+from deepagents import create_deep_agent
+from langgraph.checkpoint.memory import MemorySaver
+
+@tool
+def delete_file(path: str) -> str:
+    """删除指定文件。"""
+    ...
+
+checkpointer = MemorySaver()
 
 agent = create_deep_agent(
-    model="claude-sonnet-4-6",
-    tools=[write_file, execute_code],
-    middleware=[
-        HumanInTheLoopMiddleware(interrupt_on={
-            "write_file": True,
-            "execute_code": {"allowed_decisions": ["approve", "reject"]},
-        }),
-    ],
+    model=model,
+    tools=[delete_file, send_email, read_file],
+    interrupt_on={
+        "delete_file": True,                                        # 完全中断
+        "send_email": {"allowed_decisions": ["approve", "reject"]}, # 只能批/拒
+        "read_file": False,                                         # 不中断
+    },
+    checkpointer=checkpointer,  # 必须！
 )
 ```
+
+**三种配置值：**
+
+| 配置值 | 含义 |
+|--------|------|
+| `True` | 启用中断，允许所有 4 种决策 |
+| `False` | 不中断，Agent 直接执行 |
+| `{"allowed_decisions": [...]}` | 启用中断，只允许指定决策类型 |
+
+**四种决策类型：**
+
+| 决策 | 含义 | 适用场景 |
+|------|------|---------|
+| `approve` | 批准，使用 Agent 原始参数执行 | "确认删除这个文件" |
+| `edit` | 修改参数后执行 | "收件人改一下再发" |
+| `reject` | 跳过调用，把拒绝原因反馈给 Agent | "不要删除，取消" |
+| `respond` | 不执行工具，人的回复作为工具结果 | `ask_user` 等"问用户"的工具 |
+
+> ⚠️ `reject` vs `respond`：拒绝副作用工具（删除/发送/部署）用 `reject`，`respond` 只用于"工具本身就是问人"的场景。
+
+**条件中断（`when` 谓词）：**
+
+> 需要 `langchain>=1.3.3`。
+
+```python
+from langchain.agents.middleware import ToolCallRequest
+
+def writes_outside_workspace(request: ToolCallRequest) -> bool:
+    """仅写入 /workspace/ 外时中断。"""
+    path = request.tool_call["args"].get("file_path", "")
+    return not path.startswith("/workspace/")
+
+agent = create_deep_agent(
+    model=model,
+    interrupt_on={
+        "write_file": {
+            "allowed_decisions": ["approve", "edit", "reject"],
+            "when": writes_outside_workspace,  # ← 条件判断
+        },
+    },
+    checkpointer=checkpointer,
+)
+```
+
+**中断与恢复完整流程：**
+
+```python
+# 1. 正常调用 — Agent 遇到中断工具时暂停
+config = {"configurable": {"thread_id": "session-001"}}
+result = agent.invoke(
+    {"messages": [{"role": "user", "content": "删除 /tmp/old.txt"}]},
+    config=config,
+    version="v2",  # HITL 必须用 v2
+)
+
+# 2. 检查是否有待审批项
+if "__interrupt__" in result:
+    for action in result["__interrupt__"]:
+        print(f"Agent 想调用 {action['name']}({action['arguments']})")
+
+    # 3. 人类做决策
+    decisions = [
+        {"type": "approve"},           # 批准第 1 个
+        {"type": "edit", "args": {...}}, # 修改第 2 个
+        {"type": "reject", "message": "原因..."},  # 拒绝第 3 个
+    ]
+
+    # 4. 恢复执行
+    result = agent.invoke(
+        None,  # 不追加新消息
+        Command(resume={"decisions": decisions}),
+        config=config,
+        version="v2",
+    )
+```
+
+**关键要求：**
+- ✅ 必须配置 Checkpointer
+- ✅ 必须相同 `thread_id`
+- ✅ 必须 `version="v2"`
+- ✅ `decisions` 数量和顺序与 `action_requests` 一一对应
+
+**批量工具调用：** 一次模型调用可能触发多个工具（4 个 `write_file`），`interrupt_on` 匹配的第一个触发中断，已通过的非中断工具仍会执行。
+
+**子 Agent 独立 HITL：**
+
+```python
+agent = create_deep_agent(
+    model=model,
+    tools=[delete_file, read_file],
+    interrupt_on={"delete_file": True, "read_file": False},
+    subagents=[{
+        "name": "file-manager",
+        "description": "管理文件操作",
+        "system_prompt": "你是文件管理助手。",
+        "tools": [delete_file, read_file],
+        "interrupt_on": {
+            "delete_file": True,
+            "read_file": True,  # 子 Agent 读文件也要审批！
+        }
+    }],
+    checkpointer=checkpointer,
+)
+```
+
+**按风险等级分层：**
+
+| 级别 | 工具示例 | 策略 |
+|------|---------|------|
+| 🟢 低风险 | `read_file`, `grep`, `search` | `False` — 不中断 |
+| 🟡 中风险 | `write_file`, `edit_file` | 条件中断（`when` 谓词） |
+| 🔴 高风险 | `delete_file`, `send_email`, `execute_shell` | `True` — 始终中断 |
+| ⚫ 财务/合规 | `transfer_funds`, `deploy` | `{"allowed_decisions": ["approve", "reject"]}` — 不允许 edit |
 
 ---
 

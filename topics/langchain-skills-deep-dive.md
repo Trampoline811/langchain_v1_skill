@@ -164,38 +164,85 @@ Agent 匹配后调用 `read_file("/skills/langgraph-docs/SKILL.md")` 获取完�
 
 ### 5.1 核心思想与理论说明
 
-**核心思想**：用 LangChain 原生的 `@tool` + `AgentMiddleware` 手动实现渐进披露。Agent 通过工具调用"主动探寻"需要的技能，中间件在模型调用前"动态拼装提示词"。遵循 [Agent Skills 规范](https://agentskills.io/specification)，与 DeepAgents 内置 Skills 同源异构。
+**核心思想**：用 LangChain 原生的 `@tool` + `AgentMiddleware` 手动实现渐进披露。遵循 [Agent Skills 规范](https://agentskills.io/specification)，与 DeepAgents 内置版同源异构。
 
-**理论说明**：
+**常见误解**（对照纠正）：
 
-DIY 模式的核心机制链：**工具探寻 → 中间件拦截 → 动态提示词注入 → 状态约束**。
+| 你可能以为... | 实际情况 |
+|-------------|---------|
+| 中间件在"最后一次"调模型前修改提示词 | 中间件在**每一次**调模型前都触发 |
+| 中间件把 skill 全文注入 system prompt | 中间件注入**摘要**（description），全文由 `load_skill` 工具返回值进入对话历史 |
+| `SkillMiddleware` 是 LangChain 内置的 | 教程里是自己手写的——`class SkillMiddleware(AgentMiddleware)` |
 
-| 机制 | 作用 | LangChain 实现 |
-|------|------|----------------|
-| 技能定义与发现 | Agent 看到技能摘要列表，知道有哪些可用 | `SKILLS` dict 存 `{name: {description, prompt}}` |
-| 工具探寻 | Agent 主动判断匹配哪个技能，调用工具获取全文 | `@tool` 定义 `load_skill(name)` → 返回完整 prompt |
-| 动态提示词注入 | 每次模型调用前，把技能摘要注入 system prompt | `AgentMiddleware.wrap_model_call` → `request.override(system_prompt=...)` |
-| 渐进披露 | 启动时只暴露 description（~100 tokens/技能），正文按需加载 | middleware 注入摘要 + `load_skill` 返回正文 |
-| 状态约束（高级） | 确保 Agent 先加载技能才能用对应工具 | `CustomState.skills_loaded` + 受限工具检查 state |
-
-**运行时串联流程**：
+**静态⇄动态分离**：
 
 ```
-1. 启动 → SkillMiddleware.wrap_model_call 触发
-   → 遍历 SKILLS dict → 拼成摘要： "- sales_analytics: Write SQL queries..."
-   → 注入 request.system_prompt 末尾
-   → Agent 此时知道有 sales_analytics / inventory_management 两个技能
+════════════ 静态准备（程序启动，跑一次） ════════════
 
-2. 用户："帮我查上月销冠"
-   → Agent（LLM）判断 → 匹配 sales_analytics
-   → 调用 load_skill("sales_analytics")
-   → 工具返回完整 schema + 业务规则 prompt
+① SKILLS: list[Skill]                数据层：所有技能的定义
+   │  name: "sales_analytics"          ├─ description → 摘要，注入 system prompt
+   │  description: "写销售SQL"           └─ content    → 全文，load_skill 按需返回
+   │  content: "## 表结构\n..."
 
-3. Agent 加载完整技能知识 → 在后续对话中按指令行动
-   → (高级) write_sql_query 工具检查 state.skills_loaded → 放行
+② load_skill @tool                   工具层：让 Agent 能"主动探寻"技能
+   │  def load_skill(name):           遍历 SKILLS → 返回 content 全文
+   │      return skill["content"]
+
+③ class SkillMiddleware(AgentMiddleware):  中间件层：拦截每一次模型调用
+   │  tools = [load_skill]                  注册工具 + 注入摘要
+   │  def wrap_model_call(request, handler):
+   │      request.system_prompt += skills_summary  ← 每次调模型前拼上摘要
+   │      return handler(request)
+
+④ agent = create_agent(model,        组装：装上中间件
+        middleware=[SkillMiddleware()])
+
+════════════ 动态执行（每次用户请求） ════════════
+
+用户: "帮我写查询上月销冠的SQL"
+  │
+  ▼
+[SkillMiddleware.wrap_model_call 第1次触发]  ← 注意：每次调模型都跑！
+  │  修改 system_prompt: "...\n可用技能:\n- sales_analytics: 写销售SQL\n- inventory_management: 写库存SQL"
+  │
+  ▼
+模型看到: system_prompt(含摘要) + 用户问题 + 工具列表(含 load_skill)
+模型判断: "我需要 sales_analytics 的完整 schema" → 调用 load_skill("sales_analytics")
+  │
+  ▼
+load_skill 执行: 遍历 SKILLS → 匹配 name → return content 全文(~2000 tokens)
+  │  全文作为 ToolMessage 进入对话历史
+  │
+  ▼
+[SkillMiddleware.wrap_model_call 第2次触发]  ← 再次注入摘要（每次模型调用都跑）
+  │
+  ▼
+模型看到: system_prompt(含摘要) + 对话历史(含完整 schema) + 用户问题
+模型现在有完整 DB 结构 → 写出正确 SQL
+  │
+  ▼
+(高级) write_sql_query 检查 state.skills_loaded → 放行
 ```
 
-**本质**：`@tool` 让 Agent 主动探寻 + `wrap_model_call` 动态拼装提示词 = 按需知识注入。跟 DeepAgents 内置版的核心区别是——你需要手写 `SKILLS` 字典、`load_skill` 工具、`SkillMiddleware` 类，但换来完全的灵活性和可控性。
+**本质（一行口诀）**：`@tool` 让 Agent 主动探寻 + `wrap_model_call` 每次拦截注入摘要 = 按需知识注入。
+
+**掌握深度建议**：记住"静态准备三样东西（数据 + 工具 + 中间件），动态两步流程（Agent 看摘要选 skill → 调工具取全文）"。`TypedDict` vs `Pydantic`、`content_blocks` 的具体格式是实现细节，自己写的时候再查。
+
+> **常见疑问：为什么 `tools = [load_skill]` 写在中间件类上，而不是 `create_agent(tools=[...])` 里？**
+>
+> 两种写法效果完全一样——Agent 最终都能拿到 `load_skill` 工具。区别在**打包习惯**：
+>
+> ```python
+> # 写法A：直接传 create_agent
+> agent = create_agent(model, tools=[load_skill], middleware=[SkillMiddleware()])
+>
+> # 写法B：写在中间件类变量上（教程选这个）
+> class SkillMiddleware(AgentMiddleware):
+>     tools = [load_skill]
+> agent = create_agent(model, middleware=[SkillMiddleware()])
+> ```
+>
+> 教程选 B 是因为 `load_skill` 和 `SkillMiddleware` 逻辑上是一体的——中间件管注入摘要，工具管按需返回全文。写在一起，复制 `SkillMiddleware` 到别的项目时工具自动跟过去。**不是技术必须，是组织整洁。** 如果你的工具和中间件没有逻辑归属关系（如通用搜索工具），直接传 `create_agent(tools=[...])` 就行。
 
 ### 5.2 核心架构
 
@@ -290,6 +337,55 @@ agent = create_agent(
 
 ### 5.4 高级：带约束的状态控制
 
+**核心思想**：工具自己检查 Agent 是否"有资格"调用它——不是靠 prompt 劝，而是程序化硬拦截。
+
+**理论说明（静动分离）**：
+
+```
+════════════ 静态准备 ════════════
+
+① CustomState(TypedDict)             状态层：加 skills_loaded 字段
+   │  skills_loaded: list[str]             跟踪"Agent 读过哪些 skill"
+
+② @tool 中读 runtime.state           守卫层：工具被调用时先检查
+   │  if "sales_analytics" not in loaded:     未授权 → 返回 Error
+   │      return "Error: Load ... first"        已授权 → 放行
+
+③ SkillMiddleware(AgentMiddleware[CustomState]):
+   │  state_schema = CustomState       中间件层：声明状态扩展
+   │  tools = [load_skill, write_sql_query, ...]
+
+════════════ 动态执行 ════════════
+
+用户: "写个查询上月销冠的 SQL"
+  │
+  ▼
+Agent 没加载 skill → 直接调 write_sql_query("SELECT ...")
+  │
+  ▼
+write_sql_query 执行 → runtime.state.get("skills_loaded") → []
+  → "sales_analytics" not in [] → return "Error: Load 'sales_analytics' skill first"
+  │
+  ▼
+Agent 收到拒绝 → 被迫先调 load_skill("sales_analytics") → skills_loaded = ["sales_analytics"]
+  │
+  ▼
+Agent 再次调 write_sql_query → skills_loaded 中有 "sales_analytics" → 放行 ✅
+```
+
+**本质（一行口诀）**：`state_schema` 扩展状态 + 工具内读 `runtime.state` 守卫判断 = 技能级访问控制。
+
+**应用场景**：
+
+| 场景 | 为什么需要 |
+|------|-----------|
+| 多技能 Agent，技能间有边界 | 库存 skill 的工具不该在只加载了销售 skill 时被调用——表结构完全不同 |
+| 合规/审计要求 | 发邮件、删数据、调支付接口等敏感操作——必须确认 Agent 已读安全策略 skill |
+| 多步骤工作流 | 强制顺序：load_skill → 查数据 → 写报告，跳步就报错 |
+| 开发调试 | 快速发现 Agent "跳过思考直接行动"的坏习惯 |
+
+> **与 §9.4 坑点② 的关系**：`allowed-tools` 字段只是 prompt 文本建议（"请勿吸烟"贴纸），这里才是真正的程序化硬拦截（烟雾报警器）。
+
 加载 skill 后才能使用对应工具：
 
 ```python
@@ -316,43 +412,70 @@ class SkillMiddleware(AgentMiddleware[CustomState]):
 
 ### 6.0 核心思想与理论说明
 
-**核心思想**：DIY 模式的"内置化"——`create_deep_agent(skills=[...])`，传个路径就启用全套 Skills 能力。底层 `SkillsMiddleware` 自动处理技能发现、摘要注入、渐进披露，无需手写 `load_skill` 工具和自定义中间件。
+**核心思想**：DIY 模式的"全自动封装"——`create_deep_agent(skills=[...])`，传路径即用。把 §五的 60 行样板代码压缩成了一行参数。
 
-**理论说明**：
-
-内置模式的核心机制链：**文件后端 → 自动发现 → 系统注入 → 按需读取 → 可选执行**。
-
-| 机制 | 作用 | 与 DIY 的差异 |
-|------|------|---------------|
-| 文件后端 | 技能文件存储（内存/磁盘/Store/沙箱） | DIY 需自己实现存储；内置自动从 `sources` 路径加载 |
-| 自动发现 | 扫描所有 SKILL.md frontmatter，构建技能清单 | DIY 需手动维护 `SKILLS` 字典 |
-| System Prompt 注入 | 自动生成 "Skills System" 区块注入 system prompt | DIY 需手写 `wrap_model_call` |
-| 按需读取 | Agent 调用 `read_file` 加载完整 SKILL.md | DIY 需手写 `load_skill` 工具 |
-| Interpreter Skills | 技能提供可导入 Python 函数，代码直接 `import` | **内置独有**，DIY 无法实现 |
-| Sandbox 执行 | 技能脚本在隔离沙箱中运行，支持 shell/依赖安装 | **内置独有** |
-| 权限隔离 | 按 Skill/子 Agent 粒度控制文件读写范围 | **内置独有** |
-| Source Precedence | 同名技能后列覆盖前列，支持分层覆盖 | DIY 需自己实现 |
-
-**运行时串联流程**（与 DIY 同源但全自动）：
+**与 DIY 的对应关系**（"你手写的那些，内置版帮你干了什么"）：
 
 ```
-1. create_deep_agent(skills=["/skills/main/", "/skills/research/"])
-   → SkillsMiddleware 启动 → 扫描两个路径下所有 SKILL.md
-   → 读取 frontmatter name + description → 构建技能摘要
-   → 自动注入 "Skills System" 区块到 system prompt
-
-2. 用户提问 → Agent 匹配技能 description
-   → 调用 read_file("/skills/main/some-skill/SKILL.md")
-   → 获取完整指令 → 按指令执行
-
-3. (可选) 技能有 module: scripts/tool.py
-   → Agent 代码中 import skills.some_skill → 调用确定性函数
-
-4. (可选) sandbox=True → 技能脚本在隔离沙箱执行
-   → 可 pip install、跑 shell、读写沙箱文件系统
+DIY（§五）                             内置（§六）
+═══════════                           ═══════════
+① SKILLS: list[Skill] 手动定义    →  自动扫描 /skills/ 目录下所有 SKILL.md
+② @tool load_skill 手写           →  Agent 直接用 read_file 读 SKILL.md（文件系统中已有的能力）
+③ class SkillMiddleware 手写      →  SkillsMiddleware（deepagents 内置，from deepagents.middleware import）
+④ wrap_model_call 手写注入        →  自动通过三模板插槽注入 "Skills System" 区块
+⑤ create_agent(middleware=[...])  →  create_deep_agent(skills=[...]) 一行搞定
 ```
 
-**本质**：DIY 的"全自动封装 + 三个独有能力（Interpreter/Sandbox/权限）"。代价是依赖 `deepagents` 库和文件后端体系。
+**静态⇄动态分离**：
+
+```
+════════════ 静态准备（create_deep_agent 调用时，跑一次） ════════════
+
+agent = create_deep_agent(
+    model="claude-sonnet-4-6",
+    skills=["/skills/main/", "/skills/research/"],  ← 传路径即可！
+)
+
+SkillsMiddleware 启动：
+  ① 扫描 /skills/main/ 和 /skills/research/ 下所有 SKILL.md
+  ② 解析每个 SKILL.md 的 YAML frontmatter → 提取 {name, description, path}
+  ③ 组装三模板插槽：
+     {skills_locations}  → "/skills/main/, /skills/research/"
+     {skills_list}       → "- langgraph-docs: LangGraph 相关\n- arxiv-search: 论文检索"
+     {skills_load_warnings} → ""（无警告时为空）
+  ④ 拼入 system prompt 的 "Skills System" 区块
+  ⑤ 检查 state.skills_metadata：如果已存在（来自上轮对话/checkpoint）→ 跳过加载（去重）
+
+════════════ 动态执行（每次用户请求） ════════════
+
+用户: "LangGraph 的 checkpointer 怎么配置？"
+  │
+  ▼
+Agent 启动时的 system_prompt 中已有：
+  ## Skills System
+  - langgraph-docs (path: /skills/langgraph-docs/SKILL.md)
+    Use this skill for LangGraph-related questions.
+  - arxiv-search (path: /skills/arxiv-search/SKILL.md)
+    Search academic papers.
+  │
+  ▼
+Agent 判断匹配 → 调用 read_file("/skills/langgraph-docs/SKILL.md")
+  │  注意：这里不是 load_skill @tool！是通用的 read_file，因为 SkillsMiddleware 已经配了文件系统
+  │
+  ▼
+Agent 读到完整 SKILL.md → 按指令行动
+  │
+  ▼
+(可选) SKILL.md 有 module: scripts/helper.py
+  → Agent 代码中 import skills.langgraph_docs.scripts.helper → 调确定性函数
+  │
+  ▼
+(可选) sandbox=True → 技能脚本在隔离沙箱运行 → pip install / 跑 shell
+```
+
+**本质（一行口诀）**：DIY 的"自动挡"——你不再手写三样东西，传个路径就自动完成扫描→注入→读取全流程。
+
+**掌握深度建议**：理解"内置版 = DIY 的自动封装"这个对应关系即可。三模板插槽的具体语法、`CompositeBackend` 的路由配置是高级主题，需要时再查。
 
 ### 6.1 DIY vs 内置 选型速查
 
@@ -489,12 +612,31 @@ create_deep_agent(
 )
 ```
 
-| Agent 类型 | Skills 来源 |
-|------------|------------|
-| 主 Agent | `create_deep_agent(skills=...)` 直接注入 |
-| General-purpose 子 Agent | **自动继承**主 Agent 的 skills |
-| 自定义子 Agent | **不继承**，需显式传 `skills=[...]` |
-| 子 Agent 之间 | **完全隔离**，互不可见 |
+| Agent 类型 | Skills 来源 | `system_prompt` | `tools` | `model` |
+|------------|------------|:--:|:--:|:--:|
+| 主 Agent | `create_deep_agent(skills=...)` 直接注入 | 自定义 | 自定义 + 继承 | 自定义 |
+| General-purpose 子 Agent | **自动继承**主 Agent 的 skills | ❌ 不继承 | ✅ 默认继承 | ✅ 默认继承 |
+| 自定义子 Agent | **不继承**，需显式传 `skills=[...]` | ❌ 不继承 | ✅ 默认继承 | ✅ 默认继承 |
+| 子 Agent 之间 | **完全隔离**，互不可见 | — | — | — |
+
+> **关键区别**：`system_prompt` 始终不继承（子 Agent 需独立定义角色），`tools` 和 `model` 默认继承主 Agent（指定后完全替换，不合并）。
+
+**三种后端加载 Skills 的方式：**
+
+| 后端 | 代码 | 适用场景 |
+|------|------|---------|
+| **StateBackend** | `SkillsMiddleware(backend=StateBackend(), sources=["./skills/"])` | 默认、开发调试 |
+| **StoreBackend** | `SkillsMiddleware(backend=StoreBackend(namespace=...), sources=[...])` | 跨会话持久、企业知识库 |
+| **FilesystemBackend** | `SkillsMiddleware(backend=FilesystemBackend(root_dir="..."), sources=[...])` | 本地文件、CLI 工具 |
+
+**Skills 权限分层模型**（`permissions` 参数）：
+
+| 权限类型 | 含义 | 场景 |
+|---------|------|------|
+| `{"type": "shared", "users": "*"}` | 全员共享 | 通用知识技能 |
+| `{"type": "limited", "users": ["admin"]}` | 限定用户 | 管理员专属 |
+| `{"type": "read_only"}` | 只读保护 | 合规/安全策略 |
+| `{"type": "editable", "scope": "user"}` | 用户可编辑 | 个人笔记/偏好 |
 
 ---
 

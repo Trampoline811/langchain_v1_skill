@@ -76,6 +76,8 @@ Handoffs:                       Router:
 
 **核心思想**: 技能的**渐进披露**（Progressive Disclosure）——Agent 启动时只看到技能摘要，需要时才加载完整提示词。类似 `llms.txt` 的设计理念：先给目录，按需取正文。遵循 [Agent Skills 规范](https://agentskills.io/specification)。
 
+> **想深入理解中间件机制？** 这里只做横向对比。中间件的静态准备⇄动态执行时序、常见误解纠正，见 [`topics/langchain-skills-deep-dive.md` §五](langchain-skills-deep-dive.md#五langchain-multi-agent-skillsdiy-模式)。
+
 **理论说明**:
 
 Skills 模式的核心机制链：**工具调用 → 中间件拦截 → 动态提示词注入**。
@@ -240,6 +242,8 @@ supervisor = create_agent(
 - 模块化：子 Agent 独立开发/测试/部署
 - 灵活路由：LLM 动态决策而非硬编码规则
 - HITL 可在子Agent层面插入
+- **CompiledSubAgent**：可复用现成 LangGraph 图作为子 Agent（`CompiledSubAgent(name="...", runnable=graph)`）
+- **结构化输出**：子 Agent 可通过 `response_format=PydanticModel` 返回 JSON（`>=0.5.3`），避免返回大量原始数据
 
 **缺点**:
 - 调用开销：每次子Agent调用多一层 LLM 调用（one-shot 场景比 Handoffs/Skills 多 1 次）

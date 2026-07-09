@@ -44,9 +44,12 @@ langchain_v1/
 │   │   ├── langgraph/             #   LangGraph Runtime (35)
 │   │   ├── contributing/          #   社区贡献指南 (7)
 │   │   └── reference/             #   SDK 参考索引 (5)
-│   └── community/                 # 社区/实战案例
-│       ├── cases/                 #   完整项目示例
-│       └── patterns/              #   代码模式、最佳实践
+│   └── community/                 # 社区/实战案例（.gitignore 排除）
+│       ├── 赋范/                   #   赋范大模型技术社区
+│       │   ├── cases/             #     完整项目示例
+│       │   └── patterns/          #     代码模式、最佳实践
+│       └── 沧海九粟/               #   沧海九粟《Deep Agents 实战》课程
+│           └── ch01-* ~ ch09-*    #     11 章 + 2 准备篇
 ├── topics/                       # 专题研究报告（基于 docs/ 加工的学习产出）
 │   ├── INDEX.md                   #   专题索引
 │   └── langchain-skills-deep-dive.md  # Skills 机制深度剖析
