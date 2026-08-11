@@ -59,7 +59,7 @@ git checkout master
 | [langchain-v1-suite](skills/langchain-v1-suite/SKILL.md) | **入口** | 三层架构 + 路由决策表 + 子技能索引（渐进披露） | 所有 LangChain v1.0 相关问题 |
 | ↳ [langchain-v1](skills/langchain-v1-suite/langchain-v1/SKILL.md) | Framework | `create_agent` / `@tool` / `middleware` / `checkpointer` | 按需加载：写 Agent 代码 |
 | ↳ [langgraph-v1](skills/langchain-v1-suite/langgraph-v1/SKILL.md) | Runtime | `StateGraph` / Functional API / persistence / HITL | 按需加载：图编排 / 持久化 |
-| ↳ [deepagents-v1](skills/langchain-v1-suite/deepagents-v1/SKILL.md) | Harness | 文件系统 / 子Agent / 规划 / 上下文管理 | 按需加载：复杂自主任务 |
+| ↳ [deepagents-v1](skills/langchain-v1-suite/deepagents-v1/SKILL.md) | Harness | 文件系统 / 子Agent / 沙箱执行 / 权限控制 / MCP集成 / 上下文管理 | 按需加载：复杂自主任务 |
 | ↳ [langsmith-trace](skills/langchain-v1-suite/langsmith-trace/SKILL.md) | 观测 | CLI trace 查询 / 5 步排障 / IO 检查 | 按需加载：Debug / Tracing |
 
 ## 三层架构
@@ -145,9 +145,9 @@ python tools/update_skill.py --package
 | Skill | 最近更新 |
 |-------|------|
 | langchain-v1-suite | **2026-07-03 层级结构重构** — 吸收路由逻辑，父技能入口 + 4 子技能渐进披露 |
-| ↳ langchain-v1 | 2026-06-22 新增 3 个 reference（国产模型/踩坑/Trace）+ 洋葱模型 + 流式增强 |
+| ↳ langchain-v1 | 2026-08-11 MCP 集成扩展 — Session 生命周期 + Checkpoint 对比 |
 | ↳ langgraph-v1 | 2026-06-14 更新 Runtime 定位 + 设计模式 §11 |
-| ↳ deepagents-v1 | 2026-06-14 新增 Harness 定位 + 中间件装配 + 异步子Agent |
+| ↳ deepagents-v1 | 2026-08-11 新增沙箱执行 + 文件权限重写 + MCP 集成（ch10/11/12） |
 | ↳ langsmith-trace | 2026-06-22 新建 — CLI 安装 / 5 步排障 / Trace 树解读 |
 
 各 skill 独立 `CHANGELOG.md` 见对应目录。
