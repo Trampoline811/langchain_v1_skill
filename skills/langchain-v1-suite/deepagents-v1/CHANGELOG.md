@@ -1,5 +1,13 @@
 # deepagents-v1 更新日志
 
+## 2026-08-11 — 沙箱 + 权限 + MCP 三大模块新增（沧海九粟 ch10/11/12）
+
+- **新增** §2.7 沙箱执行：SandboxBackendProtocol 概念、8 个 Python Provider 对照表（LangSmith/Daytona/E2B/Modal/Runloop/Vercel 等）、文件两个平面（沙箱内工具 vs upload_files/download_files）、Thread-scoped vs Assistant-scoped 生命周期、安全铁三角（FilesystemPermission · MCP Server ACL · 沙箱凭证策略）
+- **重写** §4 文件系统权限（§4.1-§4.6）：FilesystemPermission 三字段 + mode="allow"/"deny"/"interrupt"、first-match-wins 求值模型、四种常见策略（全局只读/工作区白名单/共享只读+用户可写/拒绝所有）、子 Agent 继承规则、PolicyWrapper/GuardedBackend 扩展模式、10 项权限验证清单、安全边界三角
+- **新增** §10 MCP 集成：MultiServerMCPClient + connect_tools、stdio/HTTP 传输、Session 生命周期管理、MCP Session vs LangGraph Checkpoint 对比表、安全组合模式（Server ACL → Interceptor → HITL → 子Agent收缩 → 边界认知）、排错清单
+- **联动** langchain-v1 references/mcp-integration.md 补 Session 生命周期 + Session vs Checkpoint 对比 + connect_tools + 包归属
+- **来源** 沧海九粟社区《Deep Agents 实战》第 10、11、12 章
+
 ## 2026-07-09 — Phase A 流程重跑：补文件系统/任务规划/长期记忆/HITL（沧海九粟 ch03/04/08/09）
 
 - **大幅扩展** §2.1 文件系统：BackendProtocol 6 方法完整代码骨架（S3Backend 示例）、GuardedBackend（PolicyWrapper 继承模式）、后端选择指南表

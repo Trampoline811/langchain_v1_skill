@@ -175,6 +175,26 @@ def safe_node(state):
     return {}
 ```
 
+**为什么规则 ① 如此重要——`idempotent` 概念**：
+
+恢复时 node **从头重跑**——`interrupt()` 之前的代码会被重复执行。如果 `interrupt()` 前有副作用操作（API 调用、数据库写入），每次恢复都会重放：
+
+```python
+# ❌ 错误：send_email 在中断前 → 恢复时重复发送
+def bad_node(state):
+    send_email(state["to"], "确认删除")  # 第1次执行：发了邮件
+    decision = interrupt("确认？")        # 中断！
+    # 恢复后 node 从头重跑 → send_email 又发了一次！
+
+# ✅ 正确：副作用放在中断之后
+def good_node(state):
+    decision = interrupt("确认？")        # 先中断
+    if decision == "approved":
+        send_email(state["to"], "确认删除")  # 恢复后才会执行，只发一次
+```
+
+> **如果必须在 `interrupt()` 前做副作用**，用 `upsert`（幂等操作）而非 `insert`——这样即使重复执行也不会产生副作用。
+
 ---
 
 ## 四、LangChain 中间件层：`HumanInTheLoopMiddleware`（MDA）
@@ -354,6 +374,40 @@ useStream 检测到 interrupts →
                                         Agent 继续...
 ```
 
+### 6.4 前端集成要点
+
+> 来自官方 `langchain-frontend-human-in-the-loop.md`。
+
+**React + useStream 配置要点**：
+
+```tsx
+// 1. useStream 自动检测中断
+const { messages, interrupts, resume } = useStream({
+  threadId: "session-1",
+  api: "/api/agent",
+});
+
+// 2. 中断到达时渲染审批 UI
+{interrupts?.map((action) => (
+  <ApprovalCard
+    key={action.id}
+    toolName={action.name}
+    arguments={action.arguments}
+    allowedDecisions={action.review_configs?.allowed_decisions}
+    onApprove={() => resume({ decisions: [{ type: "approve" }] })}
+    onEdit={(args) => resume({ decisions: [{ type: "edit", args }] })}
+    onReject={(msg) => resume({ decisions: [{ type: "reject", message: msg }] })}
+    onRespond={(msg) => resume({ decisions: [{ type: "respond", message: msg }] })}
+  />
+))}
+```
+
+**关键要点**：
+- `version="v2"` 必须开启——`interrupts` 数组才可用
+- `decisions` 数量必须 = `action_requests` 数量，顺序严格对应
+- 多个待审批工具时，`ApprovalCard` 按顺序渲染，一次性提交所有决策
+- 支持 CopilotKit、AI Elements、Assistant UI 等框架——核心 API 相同
+
 ---
 
 ## 七、条件中断与风险分层
@@ -413,9 +467,67 @@ def high_value_transfer(request: ToolCallRequest) -> bool:
 
 ---
 
-## 八、子Agent HITL 编排
+## 八、HITL 安全体系扩展
 
-### 8.1 继承 vs 覆盖 vs 独立策略
+### 8.1 文件系统权限中断（FilesystemPermission）
+
+除了工具级别的 `interrupt_on`，Deep Agents 还支持**路径级别**的中断控制——通过 `FilesystemPermission` 的 `mode="interrupt"` 模式：
+
+```python
+from deepagents import create_deep_agent, FilesystemPermission
+
+agent = create_deep_agent(
+    model=model,
+    backend=CompositeBackend(
+        default=StateBackend(),
+        routes={"/memories/": StoreBackend(namespace=user_ns)},
+    ),
+    permissions=[
+        # 写入 /policies/ 路径时触发中断审批，而非直接拒绝
+        FilesystemPermission(
+            operations=["write"],
+            paths=["/policies/**"],
+            mode="interrupt",  # ← 不是 deny，是中断等待审批！
+        ),
+    ],
+)
+```
+
+**`mode` 三值对比**：
+
+| mode | 行为 | 适用场景 |
+|------|------|---------|
+| `"deny"` | 直接拒绝，返回错误 | 绝对禁止的路径（如系统目录） |
+| `"interrupt"` | 暂停等待人类审批 | 敏感但可能允许的路径（如合规策略） |
+| 不设置 | 按 backend 配置正常执行 | 普通工作路径 |
+
+### 8.2 Skills 权限与 HITL 联动
+
+Skills 的 `permissions` 参数也支持 `interrupt` 模式——Agent 尝试修改受保护 Skill 时触发中断：
+
+```python
+SkillsMiddleware(
+    backend=StateBackend(),
+    sources=["./skills/"],
+    permissions={
+        # 共享技能：只读保护（拒绝写入）
+        "compliance-rules": {"type": "read_only"},
+        # 可编辑技能：Agent 写入时触发 HITL 审批
+        "project-conventions": {"type": "editable", "scope": "user", "mode": "interrupt"},
+    },
+)
+```
+
+**两套安全体系的协同**：
+- `interrupt_on` = 工具级别（"调用 send_email 前暂停"）
+- `FilesystemPermission + SkillsPermission` = 资源级别（"访问 /policies/ 路径前暂停"）
+- 二者叠加形成**纵深防御**：工具层拦截 + 数据层拦截
+
+---
+
+## 九、子Agent HITL 编排
+
+### 9.1 继承 vs 覆盖 vs 独立策略
 
 ```python
 agent = create_deep_agent(
@@ -447,17 +559,18 @@ agent = create_deep_agent(
 | 子 Agent 配置了 `interrupt_on` | **完全覆盖**主 Agent 的 HITL（不合并） |
 | 子 Agent 想禁用一个主 Agent 的中断项 | 显式设 `"tool_name": False` |
 
-### 8.2 多 Agent 中断协调
+### 9.2 多 Agent 中断协调
 
 - **批量工具调用**：一次模型调用触发多个工具时，`interrupt_on` 匹配的第一个触发中断，已通过的非中断工具仍会执行
 - **子 Agent 中断**：子 Agent 的中断对主 Agent 透明——主 Agent 只看到子 Agent 回来了一个结果
 - **主 Agent 恢复**：子 Agent 中断恢复后，继续执行直到返回给主 Agent
+- **分层防御**：子 Agent 可以比主 Agent 更严格（如主 Agent 不拦截 read_file，但 file-manager 子 Agent 拦截），也可以比主 Agent 更宽松（显式设 False）
 
 ---
 
-## 九、流式场景 HITL
+## 十、流式场景 HITL
 
-### 9.1 `stream()` 中的中断检测
+### 10.1 `stream()` 中的中断检测
 
 ```python
 config = {"configurable": {"thread_id": "x"}}
@@ -484,7 +597,7 @@ for chunk in agent.stream(
     print(chunk)  # 继续流式输出
 ```
 
-### 9.2 批量工具调用的中断处理
+### 10.2 批量工具调用的中断处理
 
 Agent 一次模型调用可能发出多个工具调用（如 4 个并行的 `write_file`）。中断逻辑：
 
@@ -494,17 +607,41 @@ Agent 一次模型调用可能发出多个工具调用（如 4 个并行的 `wri
 
 ---
 
-## 十、调试与排障
+## 十一、调试与排障
 
-### 10.1 LangSmith Studio 中断视图
+### 11.1 静态中断：调试利器
+
+不同于动态 `interrupt()`，静态中断在**图编译时**声明，不写进 node 代码。适合开发调试：
+
+```python
+graph = builder.compile(
+    checkpointer=checkpointer,
+    interrupt_before=["approval_node"],   # 进入该节点前自动暂停
+    interrupt_after=["tools_node"],       # 执行完该节点后自动暂停
+)
+```
+
+**动态 vs 静态对比**：
+
+| 维度 | 动态 `interrupt()` | 静态 `interrupt_before/after` |
+|------|-------------------|----------------------------|
+| 声明位置 | node 函数内部 | `compile()` 参数 |
+| 粒度 | 条件判断（可 `if` 分支） | 节点级别 |
+| 用途 | 生产 HITL | 调试 + 单步执行 |
+| 修改成本 | 改代码 | 改编译参数 |
+
+在 LangSmith Studio 中，静态中断让你**逐节点单步执行**——每次暂停都在 Studio UI 中显示当前 state，无需手动写 `interrupt()`。
+
+### 11.2 LangSmith Studio 中断视图
 
 在 LangSmith Studio 中调试 HITL：
 
-1. 静态断点（`interrupt_before` / `interrupt_after`）→ Studio 会在节点前后自动暂停
-2. 动态 `interrupt()` → Studio 显示中断值和等待状态
-3. 可以在 Studio 中手动输入 resume 值继续执行
+1. 静态断点（`interrupt_before` / `interrupt_after`）→ Studio 会在节点前后自动暂停，显示完整 state
+2. 动态 `interrupt()` → Studio 显示中断值（如 `{"question": "确认删除？"}`）和等待状态
+3. 在 Studio 中手动输入 resume 值（如 `"approved"`）→ 继续执行
+4. 追踪所有中断/恢复的时间线，检查状态变化是否正确
 
-### 10.2 常见故障与定位
+### 11.3 常见故障与定位
 
 | 症状 | 原因 | 解决方案 |
 |------|------|---------|
@@ -517,9 +654,9 @@ Agent 一次模型调用可能发出多个工具调用（如 4 个并行的 `wri
 
 ---
 
-## 十一、快速速查
+## 十二、快速速查
 
-### 11.1 配置速查
+### 12.1 配置速查
 
 ```
 中断一个工具：  interrupt_on={"tool_name": True}
@@ -529,7 +666,7 @@ Agent 一次模型调用可能发出多个工具调用（如 4 个并行的 `wri
 子Agent独立：  subagents=[{"name":..., "interrupt_on": {...}}]
 ```
 
-### 11.2 决策类型速查
+### 12.2 决策类型速查
 
 ```
 approve  → 批准，原样执行
@@ -538,7 +675,17 @@ reject   → 不执行，告知 Agent 原因（副作用工具必须用此）
 respond  → 不执行，人类回复作为工具结果（仅用于"问用户"类工具）
 ```
 
-### 11.3 故障速查
+### 12.3 中断规则速查（idempotent）
+
+```
+interrupt() 前不要放副作用 → 恢复时 node 从头重跑，副作用重复执行
+如果必须放副作用 → 用 upsert（幂等操作）而非 insert
+不要 try/except 包裹 interrupt → GraphInterrupt 被吃掉，运行时收不到
+不要改 interrupt 调用顺序 → resume 值按顺序匹配
+Checkpointer 必须配置 → 否则状态无法保存/恢复
+```
+
+### 12.4 故障速查
 
 ```
 中断不触发 → 检查 version="v2"
@@ -562,6 +709,7 @@ respond  → 不执行，人类回复作为工具结果（仅用于"问用户"�
 | `docs/official/langchain/langchain-frontend-human-in-the-loop.md` | [Frontend HITL](https://docs.langchain.com/oss/python/langchain/frontend-human-in-the-loop) |
 | `docs/official/deepagents/deepagents-human-in-the-loop.md` | [DeepAgents HITL](https://docs.langchain.com/oss/python/deepagents/human-in-the-loop) |
 | `docs/community/沧海九粟/ch09-human-in-the-loop.md` | 沧海九粟社区《Deep Agents 实战》第 9 章 |
+| `docs/community/沧海九粟/ch07-skills.md` | 沧海九粟社区《Deep Agents 实战》第 7 章（Skills 权限中断模式） |
 
 ### 交叉引用
 

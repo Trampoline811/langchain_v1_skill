@@ -71,15 +71,59 @@ async def main():
 
 默认无状态：每次 tool 调用 → 新 session → 执行 → 销毁。适用于独立 API 调用。
 
-有状态（显式 session，适用于数据库连接池等）：
+### Session 生命周期管理
+
+**无状态模式（默认）**：每次工具调用重新初始化整个链路——对 stdio 意味着「启动子进程 → 初始化 Session → 调用 → 关闭 → 结束进程」。简单可靠，但有连接/进程启动开销。
+
+**持久 Session**：复用连接，适合数据库连接池、有状态 MCP Server。工具获取需显式传参：
 
 ```python
 from langchain_mcp_adapters.tools import load_mcp_tools
 
 async with client.session("server_name") as session:
-    tools = await load_mcp_tools(session)
+    tools = await load_mcp_tools(
+        session,
+        callbacks=client.callbacks,         # 不继承 Client 默认配置！
+        tool_interceptors=client.tool_interceptors,
+        server_name="server_name",
+        tool_name_prefix=client.tool_name_prefix,
+        handle_tool_errors=client.handle_tool_errors,
+    )
     agent = create_agent("openai:gpt-5.4", tools)
+    result = await agent.ainvoke(...)  # 所有调用必须在 async with 内
 ```
+
+> ⚠️ **三个易漏细节**：
+> ① `MultiServerMCPClient` 本身不是异步上下文管理器（不能 `async with MultiServerMCPClient(...)`），需用 `.session()`；
+> ② 直接 `load_mcp_tools(session)` 不继承 Client 的 callbacks/interceptors/前缀/错误策略，须**显式传入**；
+> ③ 已打开的持久 Session 不会因 Interceptor 动态改 headers 重新认证——动态 Header 应准备新连接配置再建 Session。
+
+### connect_tools 方式
+
+除了 `client.get_tools()`（全量）和 `load_mcp_tools(session)`（单 session），还支持 `connect_tools()` 细粒度获取：
+
+```python
+from langchain_mcp_adapters.client import connect_tools
+
+tools = await connect_tools(session, server_name="math")
+```
+
+### MCP Session vs LangGraph Checkpoint
+
+| 维度 | MCP Session | LangGraph Checkpoint |
+|------|------------|---------------------|
+| **作用域** | 传输层连接（子进程/网络 socket） | 图执行状态（消息历史/工具结果/文件系统） |
+| **生命周期** | `async with` 块内有效，关闭后连接销毁 | `thread_id` 内持久化，跨多轮对话 |
+| **恢复语义** | 不恢复——关闭后子进程退出/连接断开 | 可恢复——从 Checkpointer 重建 state |
+| **负责持久化** | ❌ 不负责（Server 侧自行管理如数据库） | ✅ Checkpointer（MemorySaver/PostgresSaver） |
+| **存储什么** | 连接句柄、临时 session 状态 | 完整的 Agent State（消息、工具结果、中间产物） |
+| **HITL 中断后** | 长时间暂停可能导致连接超时 | 从 Checkpoint 安全恢复 |
+
+> **核心理解**：Checkpoint 保存 Agent 状态，不序列化运行中的 MCP 子进程/网络连接。HITL 长暂停、进程重启后，MCP Session 不会自动恢复——Agent 恢复只需 state 完整，重新建立 MCP 连接即可继续调用工具。
+
+## 包归属说明
+
+`langchain-mcp-adapters` 是 LangChain 社区的 MCP 适配器包（非 `langchain` 核心包），负责将 MCP 协议工具转换为 LangChain Tool。`MultiServerMCPClient` 同时管理多个 MCP Server 连接。
 
 ## Interceptor（MCP 层的中间件）
 

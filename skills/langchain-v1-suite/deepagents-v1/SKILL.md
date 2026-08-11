@@ -635,6 +635,72 @@ Agent 典型行为：收到复杂任务 → 调用 `write_todos([{...pending...}
 - 压缩时会用 LLM 生成结构化摘要（意图、产出物、下一步），完整原始对话保存到文件系统
 - **与 TodoListMiddleware 协同**：即使对话被压缩，任务清单仍然完整——Agent 知道当前进度
 
+### 2.7 沙箱执行（SandboxBackendProtocol）
+
+> 沙箱 = 一种特殊的 Backend。普通 Backend（State/Filesystem/Store）只管文件读写；沙箱 Backend **额外实现 `execute()`**，让 Agent 能安全运行代码。Deep Agents 在每次模型调用前检查 Backend 是否实现 `SandboxBackendProtocol`，是则暴露 `execute` 工具。
+
+**快速上手（LangSmith Sandbox）：**
+
+```python
+from deepagents import create_deep_agent
+from deepagents.backends.langsmith import LangSmithSandbox
+from langsmith.sandbox import SandboxClient
+
+client = SandboxClient()
+sandbox = client.create_sandbox()  # template_name=, name=, idle_ttl_seconds=
+backend = LangSmithSandbox(sandbox=sandbox)
+
+agent = create_deep_agent(
+    model="claude-sonnet-4-6",
+    backend=backend,
+    system_prompt="You are a coding assistant with sandbox access.",
+)
+
+result = agent.invoke({"messages": [{"role": "user", "content": "..."}]})
+client.delete_sandbox(sandbox.name)  # ← 必须清理！
+```
+
+**8 个 Python Provider：**
+
+| Provider | 安装包 | Backend 类 | 创建 → 清理 |
+|----------|--------|-----------|------------|
+| LangSmith | `langsmith[sandbox]` | `LangSmithSandbox` | `create_sandbox()` → `delete_sandbox()` |
+| AgentCore | `langchain-agentcore-codeinterpreter` | `AgentCoreSandbox` | `CodeInterpreter().start()` → `interpreter.stop()` |
+| Daytona | `langchain-daytona` | `DaytonaSandbox` | `Daytona().create()` → `sandbox.stop()` |
+| E2B | `langchain-e2b` | `E2BSandbox` | `Sandbox.create()` → `sandbox.kill()` |
+| Modal | `langchain-modal` | `ModalSandbox` | `modal.Sandbox.create()` → `sandbox.terminate()` |
+| Runloop | `langchain-runloop` | `RunloopSandbox` | `devbox.create()` → `devbox.shutdown()` |
+| Vercel | `langchain-vercel-sandbox` | `VercelSandbox` | `Sandbox.create()` → `sandbox.stop()` |
+| NVIDIA | `langchain-nvidia-openshell` | `OpenShellSandbox` | 构造 → `delete_on_exit=True` |
+
+**文件两个平面：**
+
+```
+Agent 平面（沙箱内工具）         宿主平面（Python API）
+─────────────────────           ─────────────────────
+read_file / write_file          upload_files()    ← 播种依赖/基准数据
+edit_file / delete              download_files()  ← 提取产物/审查输出
+ls / glob / grep
+execute                        　　　　　　　　　　   ← 命令执行，不受文件权限约束
+```
+
+**生命周期：**
+
+| 模式 | 复用策略 | 清理 |
+|------|---------|------|
+| **Thread-scoped**（默认） | `sandbox_name = f"thread-{thread_id}"` + `idle_ttl_seconds` | TTL 到期自动回收 |
+| **Assistant-scoped** | `sandbox_name = f"assistant-{assistant_id}"`，跨对话共享 | 需手动清理 |
+
+**安全铁三角（互不替代，必须组合）：**
+
+```
+内置文件工具 → FilesystemPermission  ← §4
+MCP 工具     → Server ACL + Interceptor + HITL  ← MCP 集成节
+沙箱 execute → 凭证不出沙箱 + 网络控制 + 产物审查  ← 本节
+```
+
+> **最佳实践**：① 沙箱资源不论成败都在 `finally` 中清理；② 凭证永远优先留在沙箱外（宿主侧工具 > Auth Proxy > 注入沙箱）；③ 沙箱输出默认不可信，审查后再使用。
+
 ## 3. 上下文工程（Context Engineering）
 
 Deep Agents 的核心优势：**自动管理上下文窗口**。
@@ -671,17 +737,96 @@ agent = create_deep_agent(
 
 ---
 
-## 4. 权限控制
+## 4. 文件系统权限（FilesystemPermission）
+
+> `FilesystemPermission` 控制内置文件工具（read_file/write_file/edit_file/delete/ls/glob/grep）**能访问哪些路径**。注意：不覆盖 MCP 工具、不覆盖沙箱 `execute`、不覆盖自定义工具——需分别控制。
+
+### 4.1 基本用法
+
+一条规则三字段：`operations`（`"read"` / `"write"`）、`paths`（Glob 列表，支持 `**` 递归和 `{a,b}` 交替）、`mode`（`"allow"` / `"deny"` / `"interrupt"`）。
 
 ```python
-from deepagents.middleware.permissions import PermissionsMiddleware
+from deepagents import create_deep_agent, FilesystemPermission
 
-PermissionsMiddleware(
-    allowed_tools=["read_file", "search"],   # 白名单
-    denied_tools=["delete_file", "execute_shell"],  # 黑名单
-    allowed_paths=["/workspace/"],           # 文件系统路径限制
+agent = create_deep_agent(
+    model=model,
+    permissions=[
+        FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"),
+    ],
 )
 ```
+
+**操作组映射**：`read` = `ls` + `read_file` + `glob` + `grep`；`write` = `write_file` + `edit_file` + `delete`。
+
+**三种 mode**：`"allow"` 放行 / `"deny"` 拒绝 / `"interrupt"` 暂停等待审批（需 `deepagents>=0.6.8` + checkpointer + 复用 §5 HITL 恢复协议）。
+
+### 4.2 求值模型：首条匹配生效（first-match-wins）
+
+多条规则**按声明顺序**求值，同时匹配 `operations` + `paths` 的第一条立即生效。无匹配时**默认允许**。
+
+```
+稳定规则顺序：① 最具体敏感路径 → ② 业务允许路径 → ③ 最宽泛兜底规则
+```
+
+### 4.3 四种常见策略
+
+**策略一：整个文件系统只读**
+```python
+FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")
+```
+
+**策略二：只能访问指定工作区（白名单）**
+```python
+permissions=[
+    FilesystemPermission(operations=["read", "write"], paths=["/workspace/**"], mode="allow"),
+    FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny"),  # ← 末尾兜底！
+]
+```
+
+**策略三：共享知识只读，用户记忆可写**（配合 CompositeBackend）
+```python
+backend = CompositeBackend(
+    default=StateBackend(),
+    routes={"/memories/": StoreBackend(namespace=user_ns),
+            "/policies/": StoreBackend(namespace=org_ns)},
+)
+permissions=[
+    FilesystemPermission(operations=["write"], paths=["/policies/**"], mode="deny"),
+]
+```
+
+**策略四：拒绝所有文件访问**
+```python
+FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny")
+# 工具仍在，但每次调用返回权限错误
+```
+
+### 4.4 子 Agent 继承规则
+
+| 场景 | 效果 |
+|------|------|
+| 子 Agent **不配置** `permissions` | 继承父 Agent 的全部权限规则 |
+| 子 Agent **配置了** `permissions` | **整体替换**父规则（非追加/交集），规则必须独立闭合 |
+
+### 4.5 PolicyWrapper / GuardedBackend（扩展模式）
+
+当判断条件超出「操作类型 × 路径」两维度（频率/内容/调用身份/租户状态）时，在 Backend 层扩展：
+
+```python
+class GuardedBackend(FilesystemBackend):
+    def write(self, file_path: str, content: str) -> WriteResult:
+        if file_path.startswith("/policies/"):
+            return WriteResult(error=f"写入被拒绝：{file_path}")
+        return super().write(file_path, content)
+```
+
+两层控制顺序：`内置文件工具 → FilesystemPermission（先检查）→ Policy Hook（再执行）→ 实际存储 Backend`
+
+### 4.6 权限验证清单
+
+上线前至少验证 10 项：允许路径读写 ✅ / 敏感路径读取被拒 ✅ / 敏感路径写/编辑/删除被拒 ✅ / 工作区外兜底 ✅ / 规则顺序交换回归 ✅ / 子 Agent 同路径 ✅ / interrupt 三决策恢复 ✅ / Policy Hook 两分支 ✅ / 每个旁路独立控制 ✅ / 目录删除含受保护后代全拒 ✅
+
+> **安全边界重申**：`FilesystemPermission` 不覆盖 MCP 工具（需 Server ACL + Interceptor）· 不覆盖沙箱 `execute`（需沙箱策略）· 不覆盖自定义工具（需工具内校验或 `interrupt_on`）。
 
 ---
 
@@ -969,14 +1114,100 @@ agent = create_deep_agent(
 6. **Backend 选型 →** `references/backends-guide.md`
 7. **子 Agent 详解 →** `references/subagents-guide.md`
 8. **Skills 详解 →** `references/skills-guide.md`
+9. **MCP 集成 →** `references/mcp-integration.md`（在 langchain-v1 skill 中）
+10. **沙箱选型 →** 本节 §2.7
 
 ---
 
-## 10. 实战案例速查
+## 10. MCP 集成（Model Context Protocol）
+
+> Deep Agents 通过 `langchain-mcp-adapters` 社区包接入 MCP 工具。MCP 工具与其他 LangChain 工具一致——Agent 像调用 `@tool` 一样调用 MCP Server 暴露的函数。
+
+### 10.1 快速上手
+
+```bash
+pip install "langchain-mcp-adapters>=0.3,<0.4" "mcp>=1.28,<2"
+```
+
+```python
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from deepagents import create_deep_agent
+
+# ① 连接 MCP Server
+client = MultiServerMCPClient(
+    {"course_math": {"transport": "stdio", "command": "python", "args": ["math_server.py"]}},
+    tool_name_prefix=True,  # 强烈建议！→ 工具名变为 course_math_add
+)
+tools = await client.get_tools()
+
+# ② 交给 Agent
+agent = create_deep_agent(model=model, tools=tools)
+result = await agent.ainvoke({"messages": [{"role": "user", "content": "37 + 58 = ?"}]})
+```
+
+> ⚠️ MCP 工具只支持异步——全程用 `await client.get_tools()`、`await tool.ainvoke()`、`await agent.ainvoke()`。同步 `invoke()` 会抛 `NotImplementedError`。
+
+### 10.2 多种传输方式
+
+| 传输 | 配置 | 适用 |
+|------|------|------|
+| **stdio**（本地） | `{"transport": "stdio", "command": "...", "args": [...]}` | 本地脚本/CLI 工具 |
+| **HTTP**（远程） | `{"transport": "http", "url": "https://...", "headers": {...}}` | 远程服务/团队共享 |
+| **WebSocket** | 已实装但不推荐主路径 | — |
+
+### 10.3 Session 管理
+
+```python
+# 无状态模式（默认）：每次工具调用 = 新 Session → 执行 → 销毁
+tools = await client.get_tools()
+
+# 持久 Session：复用连接，适合有状态 Server
+async with client.session("course_math") as session:
+    tools = await load_mcp_tools(session, ...)  # 需显式传 callbacks/interceptors/前缀
+    agent = create_deep_agent(model=model, tools=tools)
+    result = await agent.ainvoke(...)  # 所有调用必须在 async with 内
+```
+
+**MCP Session vs LangGraph Checkpoint**：
+
+| 维度 | MCP Session | LangGraph Checkpoint |
+|------|------------|---------------------|
+| **作用域** | 传输层连接（子进程/网络） | 图执行状态（消息历史/工具结果） |
+| **生命周期** | Session 打开→关闭 | thread_id 内持久化 |
+| **恢复语义** | 不恢复——关闭后连接丢失 | 可恢复——从 Checkpointer 重建 state |
+| **负责持久化** | ❌ 不负责（Server 自行管理） | ✅ Checkpointer（MemorySaver/PostgresSaver） |
+
+> **关键**：HITL 中断恢复、进程重启后，MCP Session 不会自动恢复——仅依赖 Agent State 不依赖连接状态。
+
+### 10.4 安全组合模式
+
+```
+MCP 工具安全分层：
+  ① Server 侧校验（ACL/参数/租户）  ← 必须，MCP 是独立进程
+  ② Client Interceptor（≠ Agent Middleware） ← 可做前置过滤
+  ③ HITL（interrupt_on 用带前缀最终名）  ← 副作用工具审批
+  ④ 子 Agent 工具收缩（显式 tools=）  ← 最小权限
+  ⑤ FilesystemPermission 不覆盖 MCP Tool  ← 认识边界
+```
+
+### 10.5 排错清单
+
+| 症状 | 原因 | 解决 |
+|------|------|------|
+| 同步 `invoke()` 报错 | MCP 工具是异步的 | 改 `ainvoke()` |
+| 找不到 server 文件 | 相对路径 | `Path(__file__).with_name("...").resolve()` 绝对路径 |
+| 协议解析失败 | stdout 混入调试日志 | 日志写 stderr，不用 `print()` |
+| HITL 没拦截 | 用了原始 MCP 工具名 | `interrupt_on` 用带前缀的最终名（如 `billing_charge_card`） |
+| 文件权限没拦 MCP | 预期行为 | MCP Server 侧独立控制 |
+| 状态丢失 | 无状态模式默认临时 Session | 用 `client.session()` 或 Server 端持久化 |
+
+---
+
+## 11. 实战案例速查
 
 > 完整案例源码见 `docs/community/cases/`。deepagents 最擅长**需要文件系统 + 代码执行 + 多步子任务**的复杂场景。
 
-### 10.1 全自动数据分析 Agent
+### 11.1 全自动数据分析 Agent
 
 ```
 场景：上传 CSV/Excel → 自动清洗 → 探索分析 → 生成可视化报告
@@ -1001,7 +1232,7 @@ result = agent.invoke({
 # Agent 自动：读文件 → 清洗 → 统计 → 画图 → write_file 保存 → 输出报告
 ```
 
-### 10.2 文档审核 Agent
+### 11.2 文档审核 Agent
 
 ```
 场景：上传 PDF 合同 → 结构化提取条款 → 逐条合规检查 → 输出审核报告
@@ -1027,7 +1258,7 @@ agent = create_deep_agent(
 )
 ```
 
-### 10.3 案例场景对照
+### 11.3 案例场景对照
 
 | 你要做… | 用 | 参考案例 |
 |---------|-----|---------|
