@@ -4,6 +4,44 @@
 > **定位**: 从 SKILL.md 分离出来的 MCP 深度内容。
 > **文中标记**: 无标记 = 官方文档 | `[社区]` = 社区实战案例
 
+## ⚠️ 2026-09 版本分叉：`langchain>=1.4.0` 内置 `langchain.mcp`
+
+> `langchain` v1.4.0（2026-09-01）起，MCP 支持**内置**在 `langchain.mcp` 命名空间（基于 [FastMCP](https://gofastmcp.com)），**取代独立包 `langchain-mcp-adapters`**。`langchain.mcp` 目前是 **Beta**（导入触发一次 `LangChainBetaWarning`）。下文所有 MultiServerMCPClient 示例为 **<1.4 / 存量**路径；官方迁移指南：[Migrate from `langchain-mcp-adapters`](https://docs.langchain.com/oss/migrate/langchain-mcp-adapters)。
+
+```bash
+pip install "langchain[mcp]"   # uv add "langchain[mcp]" —— 自动带 FastMCP
+```
+
+**核心对象 `MCPAdapter`** —— 一个适配器适配所有传输，target 自动推断：
+
+```python
+from pathlib import Path
+from langchain.agents import create_agent
+from langchain.mcp import MCPAdapter
+
+async def main():
+    # target 支持：http(s) URL(str) → streamable HTTP / Path → stdio 子进程 /
+    #              进程内 FastMCP 实例 / MCPConfig dict 多 server / 预构建 fastmcp.Client
+    async with MCPAdapter("https://example.com/mcp") as adapter:
+        tools = await adapter.list_tools()          # 发现并转成 LangChain tools
+        agent = create_agent("claude-sonnet-5", tools)
+        return await agent.ainvoke({"messages": [{"role": "user", "content": "..."}]})
+
+# 多 server：MCPAdapter({"mcpServers": {"a": {...}, "b": {...}}})  → list_tools() 聚合
+# 本地脚本：MCPAdapter(Path("weather_server.py"))；进程内：MCPAdapter(fastmcp_instance)
+```
+
+> ⚠️ `str` target **必须是 http(s) URL**（FastMCP 会先试文件系统路径再试 URL，MCPAdapter 出于安全拒绝不像 URL 的字符串）。tools 持有 client，agent 在 `async with` 外仍可用。
+
+**v1.4 与旧包的关键差异**（迁移注意）：
+- `MultiServerMCPClient` → `MCPAdapter`（单适配器多传输）；`get_tools()` → `await adapter.list_tools()`；`client.session()` 有状态会话模式 → 由 FastMCP 管理连接/缓存/协议协商（见 [Connections](https://docs.langchain.com/oss/langchain/mcp/connections)）
+- 新增**中断式 elicitation**：server 中途向人提问 → 自动变 LangGraph `interrupt()`，人工回答后续跑
+- 鉴权走 FastMCP：bearer token / OAuth 2.1 / 任意 `httpx.Auth`（含部署内 per-user auth）
+- 工具元数据带 `mcp` 命名空间 provenance，`destructive_hint` 可用于把破坏性工具 gate 在 HITL 审批后
+- MCP 工具仍为**异步**工具（await 调用链）；与 `create_agent` / `create_deep_agent` 都能组合
+
+**能力边界（与旧版一致）**：MCP 工具不受 `FilesystemPermission` 约束 → 破坏性 MCP 工具用 HITL `interrupt_on` + server 侧 ACL。
+
 ## MCP 解决什么问题
 
 MCP 不是"另一种写工具的方式"——它解决的是**工具接口的标准化和跨组织复用**。

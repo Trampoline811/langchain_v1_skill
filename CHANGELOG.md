@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 2026-09-05 — 沧海九粟 ch13-16 + 官方 v0.7/v1.4 全面同步
+
+- **社区归档**（`docs/community/沧海九粟/`，本地不入库）：ch13 评分量规、ch14 Streaming、ch15 Interpreters、ch16 动态子 Agent、release-v0-7 发布说明，INDEX.md 同步
+- **deepagents-v1 skill**：版本基线更新至 v0.7（TodoListMiddleware opt-in / Backend Factory 移除 / 文件工具行为变化 / 同名中间件原位替换）；新增 QuickJS Interpreter+PTC、动态子 Agent、RubricMiddleware、Streaming v3 Typed Projections 四模块
+- **langchain-v1 skill**：MCP 集成指引 v1.4 分叉（内置 `langchain.mcp.MCPAdapter` 取代 `langchain-mcp-adapters`）
+- 盲测脚本未受影响（17/17）；部署副本 `E:\AI_skill\` 已按 sync-strategy 全量同步
+
 ## 2026-07-03 — Skill 层级结构重构
 
 ### 架构变更

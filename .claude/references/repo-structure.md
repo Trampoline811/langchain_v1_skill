@@ -49,7 +49,7 @@ langchain_v1/
 │       │   ├── cases/             #     完整项目示例
 │       │   └── patterns/          #     代码模式、最佳实践
 │       └── 沧海九粟/               #   沧海九粟《Deep Agents 实战》课程
-│           └── ch01-* ~ ch09-*    #     11 章 + 2 准备篇
+│           └── ch01-* ~ ch16-*    #     16 章 + 2 准备篇 + release-v0-7
 ├── topics/                       # 专题研究报告（基于 docs/ 加工的学习产出）
 │   ├── INDEX.md                   #   专题索引
 │   └── langchain-skills-deep-dive.md  # Skills 机制深度剖析

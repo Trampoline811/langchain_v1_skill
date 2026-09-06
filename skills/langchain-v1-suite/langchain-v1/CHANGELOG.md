@@ -1,5 +1,10 @@
 # langchain-v1 更新日志
 
+## 2026-09-05 — MCP 章节 v1.4 分叉更新（官方 changelog）
+
+- **更新** `references/mcp-integration.md` — 顶部新增「2026-09 版本分叉」：langchain>=1.4 内置 `langchain.mcp.MCPAdapter`（FastMCP，Beta）取代 `langchain-mcp-adapters`；MCPAdapter 单适配器多传输（http(s)/Path/进程内 FastMCP/MCPConfig 多 server）、elicitation 中断式提问、FastMCP 鉴权、`destructive_hint` HITL gating、str target 必须为 URL 的安全约束；原 MultiServerMCPClient 全章标注为 <1.4/存量路径 + 官方迁移链接
+- **来源** 官方 changelog `langchain v1.4.0`（2026-09-01）+ 官方 `langchain/mcp` 文档快照
+
 ## 2026-06-22 (AgentSeek 社区 skill 对标更新)
 
 - **新增** `references/cn-model-integration.md` — 国产模型集成指南（DeepSeek/Qwen/GLM/Moonshot）：ChatOpenAI 直连三大坑、两种修复方案、推理模型路由、生产 Checklist

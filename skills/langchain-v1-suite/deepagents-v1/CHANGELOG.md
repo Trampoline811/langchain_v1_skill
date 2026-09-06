@@ -1,5 +1,15 @@
 # deepagents-v1 更新日志
 
+## 2026-09-05 — v0.7 基线 + 新四大模块（沧海九粟 ch13-16 + 官方 changelog）
+
+- **新增** 文首「⚠️ 版本基线」：deepagents 0.6→0.7 breaking 对照表（TodoListMiddleware opt-in / Backend Factory 移除 + StoreBackend 显式 namespace / write_file 覆盖 + delete 工具 / 空 ls 返回 `No files found` / grep 1000 上限 + truncated / 同名中间件原位替换 / 空基础提示词 +65% 输入降耗）+ v0.6→v0.7 `rg` 静态扫描清单
+- **重写** §2.2 代码执行：删除过期 `execute_python`（v0.4/0.5 时代），改为 QuickJS `CodeInterpreterMiddleware`（eval / mode=call|turn|thread / memory_limit / timeout / max_result_chars）+ PTC 白名单（snake_case→camelCase `tools.lookupOrder`、参数名不变、不逐次走 interrupt_on 审批）+ Interpreter vs Sandbox vs Dynamic Subagents 选型表
+- **新增** §2.8 动态子 Agent：`task()` 三字段（description/subagentType/responseSchema）、workflow 提示词四要素、`max_ptc_calls` ≠ `task()` 上限、安全护栏
+- **新增** §2.9 评分量规：`RubricMiddleware`（>=0.6.5 Beta）角色分工、per-call `rubric` 参数、verdicts 表（satisfied/needs_revision/failed/grader_error/max_iterations_reached）、Fail-Closed 验收门、`on_evaluation` 回调边界
+- **新增** §12 实时事件流：v3 Typed Projections（messages/tool_calls/values/subagents/output）、subagent handle（name/path/status）、interleave 与 asyncio.gather、raw protocol（seq/method/namespace/data）、get_stream_writer 自定义事件
+- **更新** §10 MCP：langchain>=1.4 内置 `langchain.mcp.MCPAdapter`（FastMCP）双轨指引；MultiServerMCPClient 标注为 <1.4/存量路径
+- **来源** 沧海九粟社区《Deep Agents 实战》第 13-16 章 + release-v0-7 + 官方 changelog（langchain v1.4.0 / deepagents v0.7.0）
+
 ## 2026-08-11 — 沙箱 + 权限 + MCP 三大模块新增（沧海九粟 ch10/11/12）
 
 - **新增** §2.7 沙箱执行：SandboxBackendProtocol 概念、8 个 Python Provider 对照表（LangSmith/Daytona/E2B/Modal/Runloop/Vercel 等）、文件两个平面（沙箱内工具 vs upload_files/download_files）、Thread-scoped vs Assistant-scoped 生命周期、安全铁三角（FilesystemPermission · MCP Server ACL · 沙箱凭证策略）

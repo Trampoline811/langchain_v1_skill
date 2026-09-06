@@ -1,6 +1,6 @@
 ---
 name: deepagents-v1
-description: Deep Agents 开箱即用 agent harness 代码生成规范。内置文件系统、子agent、规划、上下文管理、代码执行。当用户需要复杂多步任务、代码生成/执行、深度研究、内容构建等完整 agent 堆栈时使用。触发词：deepagents、create_deep_agent、sandbox、代码执行、filesystem、文件系统、长任务、subagent 集群、深度研究、内容构建、FilesystemMiddleware、SubAgentMiddleware、SkillsMiddleware、MemoryMiddleware。
+description: Deep Agents 开箱即用 agent harness 代码生成规范。内置文件系统、子agent、规划、上下文管理、代码执行。当用户需要复杂多步任务、代码生成/执行、深度研究、内容构建等完整 agent 堆栈时使用。触发词：deepagents、create_deep_agent、sandbox、代码执行、filesystem、文件系统、长任务、subagent 集群、深度研究、内容构建、FilesystemMiddleware、SubAgentMiddleware、SkillsMiddleware、MemoryMiddleware、RubricMiddleware、评分量规、CodeInterpreter、eval、PTC、动态子Agent、task()、streaming、事件流、TodoListMiddleware。
 ---
 
 # Deep Agents v1 编码规范
@@ -14,6 +14,27 @@ description: Deep Agents 开箱即用 agent harness 代码生成规范。内置�
 > LangChain 是 Agent Framework（抽象层），LangGraph 是 Agent Runtime（基础设施层），DeepAgents 是 Agent Harness（预组装层）。
 > — Harrison Chase, "[Agent Frameworks, Runtimes, and Harnesses- oh my!](https://www.langchain.com/blog/agent-frameworks-runtimes-and-harnesses-oh-my)" (2025.10)
 > 💡 不确定用哪个？→ 回到父技能 `skills/langchain-v1-suite/SKILL.md` 查路由决策表
+
+## ⚠️ 版本基线：deepagents 0.6 → 0.7（2026-07 breaking，本文档以 ≥0.7.x 为准）
+
+> v0.7 把"框架默认替你做决定"的范围大幅收窄：**默认层更薄，策略由应用显式选择**（输入 Token 降 ~65%）。旧教程/旧代码基于 v0.6 默认值写的部分必须按下面清单核对，**不能照抄 v0.5/0.6 代码**。已核对基线：`deepagents==0.7.1`~`0.7.8`、`langchain>=1.4`。
+
+| v0.7 变化 | 旧行为（v0.6） | 新行为（v0.7+） | 迁移动作 |
+|---|---|---|---|
+| `TodoListMiddleware` 改为 **opt-in** | 默认装配，`write_todos`/`todos`/规划提示词随 Agent 自带 | 默认**不再装配**（官方评测无显著增益） | 需要时显式加 `middleware=[TodoListMiddleware()]`（从 `langchain.agents.middleware` 导入，**不是** deepagents） |
+| 默认基础提示词变空 + 工具说明精简 | 框架附带长通用提示词/教程式工具说明 | 默认基础层为空，接口优于示例 | 业务约束写进自己的 `system_prompt`，别把旧基础提示词复制回来 |
+| Backend Factory 移除 | `backend=lambda rt: StoreBackend()` 兼容写法 | 只收**具体实例**；`StoreBackend` 必须显式 `namespace=`（跨用户隔离关键） | 删 `BackendFactory`/`BACKEND_TYPES`/`FileFormat`/`Unset`；用 `StoreBackend(namespace=lambda rt: (rt.server_info.user.identity,))` |
+| 文件工具增强 | `write_file` 已存在即报错；无 `delete`；空 `ls/glob` 返回 `[]` | `write_file` 直接覆盖；新增 `delete`（递归删目录=全有或全无）；空目录返回文本 `No files found`；`read_file` 行号后两个空格（不再固定宽度+Tab） | 需要删除就用 `delete`；解析原始工具文本的代码全部重查（`"[]"`/`split("\t")`/固定宽度假设） |
+| 大目录搜索有界 | `grep/glob` 可能挂起或丢结果 | 超时返回已得结果并标记 `truncated=True`；`grep` 默认上限 1000 匹配（模型可 `max_count` 调）；`read_file` 分页返回总行数/剩余/下一 offset | "无异常"≠搜索完整；看到 `truncated` 要收窄路径或继续分片 |
+| Middleware **按 `.name` 原位替换** | 传入同名内置中间件实例报重复错误 | `.name` 与内置同名 → 原位替换（保留栈顺序）；无同名 → 插到核心层之后 | 覆盖 `SummarizationMiddleware` 阈值/模型/提示词直接传新实例；**整实例替换，不是字段 merge**（backend/权限等要自备） |
+| Prompt caching / Profile | — | `deepagents[aws]` Bedrock 缓存；Fireworks 自动 session affinity；Nemotron 3 Ultra 内置 HarnessProfile | 按需关注，与通用 API 无关 |
+
+**v0.6→v0.7 静态扫描清单**（迁移时执行）：
+```bash
+rg -n 'BackendFactory|BACKEND_TYPES|FileFormat|Unset|history_path_prefix|ls_info|glob_info|grep_raw' .
+rg -n 'backend\s*=\s*(lambda|.*_factory)' .
+rg -n 'split\("\\t"|"\[\]"|cat -n|No files found' .
+```
 
 ## ⚠️ 选型边界：什么时候**不该**用 Deep Agents
 
@@ -114,12 +135,17 @@ model = ChatOpenAI(
 
 > `ChatOpenAI` + `base_url` 是接入国内平台的通用模式——换 URL 和 Key 就能切 DeepSeek、智谱、阿里云等。
 
-**`create_deep_agent()` 自动装配：**
-- `FilesystemMiddleware` — 虚拟文件系统，读写文件跨轮次保留
-- `SummarizationMiddleware` — 上下文超限自动压缩
-- `SubAgentMiddleware` — 内置 `general-purpose` 子 agent
-- `MemoryMiddleware` — 从 `AGENTS.md` 加载持久记忆
-- `SkillsMiddleware` — 从 `skills/` 目录加载领域知识
+**`create_deep_agent()` 自动装配（v0.7+ 实际默认）：**
+- `FilesystemMiddleware` — 虚拟文件系统（v0.7 起内置 `delete`，`write_file` 已存在直接覆盖，空 `ls/glob` 返回 `No files found`）
+- `SummarizationMiddleware` — 上下文超限自动压缩（默认约 85% 触发，可用同名实例覆盖阈值）
+- 内置 `general-purpose` 子 agent（默认可用，继承主 Agent 工具/权限/中间件覆盖）
+- `MemoryMiddleware` — 仅当传 `memory=` 时激活
+- `SkillsMiddleware` — 仅当传 `skills=` 时激活
+- ⚠️ **v0.7 起 `TodoListMiddleware` 不再默认装配**——需要规划/进度 UI 时显式加：
+  ```python
+  from langchain.agents.middleware import TodoListMiddleware
+  agent = create_deep_agent(model=model, middleware=[TodoListMiddleware()])
+  ```
 
 ---
 
@@ -136,8 +162,11 @@ agent = create_deep_agent(
     backend=StateBackend(),  # 或 FilesystemBackend(root_dir="...")
 )
 
-# Agent 自动获得文件系统工具：read_file, write_file, edit_file, ls, glob, grep
+# Agent 自动获得文件系统工具：read_file, write_file, edit_file, delete, ls, glob, grep
 # 文件跨轮次持久化在 state 中
+# v0.7：write_file 已存在时直接覆盖；delete 递归删目录=全有或全无（权限层整体检查后代路径）
+#      read_file 分页返回 {总行数, 剩余行数, 下一 offset}；grep/glob 超时返回 truncated=True 的部分结果
+#      需要最小工具面时用 FilesystemMiddleware(backend=..., tools=["read_file","ls","glob","grep"]) allowlist（read_file 不可排除）
 ```
 
 **六种 Backend 完整参考：**
@@ -249,26 +278,80 @@ class GuardedBackend(FilesystemBackend):
 - 上下文达窗口 85% → 自动生成结构化摘要，完整记录保存到文件系统
 - Agent 随时 `read_file`/`grep` 回溯完整内容
 
-### 2.2 代码执行（Interpreters + Sandboxes）
+### 2.2 代码执行（QuickJS Interpreters + PTC + Sandboxes）
+
+> **Interpreter ≠ Sandbox**。Interpreter（`CodeInterpreterMiddleware`，Beta）是 **Agent 循环内的内存 JS 运行时**（QuickJS），让模型用代码编排循环/筛选/批量工具调用，中间结果不进模型上下文；Sandbox 是独立容器/VM 里执行 Shell/依赖/测试（见 §2.7）。需要 Python 3.11+ 与 `langchain-quickjs>=0.2.0`（安装 `uv add "deepagents[quickjs]"`）。
+
+**选型：普通 Tool Calling vs Interpreter vs Sandbox vs Dynamic Subagents**
+
+| 任务形状 | 优先选择 |
+|---|---|
+| 一两个简单外部调用 | 普通 Tool Calling |
+| 纯内存排序/分组/解析/校验 | `CodeInterpreterMiddleware`（纯 JS） |
+| 大量外部调用需循环/并行 | `CodeInterpreterMiddleware` + **PTC**（`Promise.all` 批量） |
+| Shell/装依赖/跑测试/完整文件系统 | Sandbox（§2.7） |
+| 大量独立任务需不同 Agent 角色 | Dynamic Subagents（§2.8，代码调度 `task()`） |
+
+**基础用法（`eval` 工具）：**
 
 ```python
-from deepagents.backends import StateBackend
-from deepagents.middleware import FilesystemMiddleware
+from deepagents import create_deep_agent
+from langchain_quickjs import CodeInterpreterMiddleware
 
 agent = create_deep_agent(
-    model="claude-sonnet-4-6",
-    middleware=[
-        FilesystemMiddleware(backend=StateBackend()),
-        # 内置 Python 解释器 — agent 可以执行代码
-    ],
+    model=model,
+    system_prompt="Use eval for deterministic filtering and aggregation.",
+    middleware=[CodeInterpreterMiddleware(mode="call")],  # call|turn|thread
 )
-# Agent 拥有 execute_python 工具，可运行任意代码
+# Agent 获得 eval 工具 → 把自写 JS 交给 QuickJS 执行，返回最后一个表达式值
 ```
 
-**Sandboxes 隔离级别：**
-- 本地进程（默认）— 最快，无额外依赖
-- Docker sandbox — 完全隔离，需 Docker
-- 远程 sandbox — 通过 `remote-sandboxes` 配置
+**PTC（Programmatic Tool Calling）— 白名单工具以 `tools.*` 暴露给 JS：**
+
+```python
+from langchain.tools import tool
+from langchain_quickjs import CodeInterpreterMiddleware
+
+@tool
+def lookup_order(order_id: str) -> dict: ...   # 窄工具：按 ID 读一条
+
+agent = create_deep_agent(
+    model=model,
+    tools=[lookup_order],                        # 或 tools=[]，仅 PTC 用
+    middleware=[
+        CodeInterpreterMiddleware(
+            ptc=[lookup_order],   # 传 BaseTool 对象=只给解释器；传 "lookup_order" 名称=从 Agent 工具集匹配
+            mode="turn",
+            max_ptc_calls=16,
+        )
+    ],
+)
+```
+
+```typescript
+// Python snake_case 工具名 → JS camelCase：lookup_order → tools.lookupOrder
+// 参数名保持原 Tool Schema（仍是 order_id，不是 orderId）
+const rows = await Promise.all(ids.map(id => tools.lookupOrder({ order_id: id })));
+```
+
+**配置参数（默认值）：**
+
+| 参数 | 默认 | 说明 |
+|---|---:|---|
+| `mode` | `"thread"` | 状态保留：`call`(单次 eval 重置)/`turn`(本轮多次 eval 共享)/`thread`(跨轮，Snapshot+Checkpointer) |
+| `memory_limit` | 64 MB | 每线程 QuickJS 堆上限 |
+| `timeout` | 5 s | 每次 `eval` 执行时限 |
+| `max_ptc_calls` | 256 | 单次 `eval` 内 PTC 调用上限（**不限制 `task()` 调度数**） |
+| `max_result_chars` | 4000 | 截断返回模型的结果/错误/console |
+| `capture_console` | True | 是否返回 console 输出 |
+| `subagents` | True | 配子 Agent 时是否暴露 `task()`（§2.8 用） |
+| `max_snapshot_bytes` | None | Snapshot 上限（默认跟随内存上限） |
+
+**安全边界（不可绕过）：**
+- QuickJS 默认**无**文件/网络/Shell/系统时间；PTC 白名单里放什么工具，JS 就能做什么 → 优先窄工具，宽 SQL/任意 URL 不进白名单
+- ⚠️ PTC 调用**不逐次走父 Agent 的 `interrupt_on` 审批**——转账/删库/发信等高副作用工具必须走普通工具路径或保留 HITL
+- QuickJS 是进程内受限运行时，**不是宿主内存隔离**；不可信代码仍要进 Sandbox/容器
+- Snapshot 恢复不撤销 PTC 已造成的外部副作用（不是事务）
 
 ### 2.3 子 Agent（SubAgentMiddleware）
 
@@ -556,15 +639,17 @@ SkillsMiddleware(
 
 > `create_deep_agent()` 的本质 = `create_agent()` + 三层自动装配的中间件堆栈。
 
-**常驻层（5 个，始终启用，不可排除）：**
+**核心层（v0.7 起自动启用；`TodoListMiddleware` 已移出默认层，改为 opt-in）：**
 
-| 中间件 | 注入能力 |
-|--------|---------|
-| `TodoListMiddleware` | `write_todos` 工具 + 规划提示词 |
-| `FilesystemMiddleware` | 6 个文件工具 + 权限控制 |
-| `SummarizationMiddleware` | 对话历史自动压缩（触发阈值可配） |
-| `PatchToolCallsMiddleware` | 工具调用内部修补（框架内部） |
-| `AnthropicPromptCachingMiddleware` | 提示词缓存（非 Anthropic 模型自动跳过） |
+| 中间件 | 注入能力 | 默认状态 |
+|--------|---------|:--:|
+| `FilesystemMiddleware` | 6+ 个文件工具（含 v0.7 的 `delete`）+ 权限控制 | ✅ 默认 |
+| `SummarizationMiddleware` | 对话历史自动压缩（默认 ~85% 触发，可用同名实例覆盖） | ✅ 默认 |
+| `PatchToolCallsMiddleware` | 工具调用内部修补（框架内部） | ✅ 默认 |
+| `AnthropicPromptCachingMiddleware` | 提示词缓存（非 Anthropic 模型自动跳过） | ✅ 默认 |
+| `TodoListMiddleware` | `write_todos` 工具 + 规划提示词 | ⚠️ **v0.7 起 opt-in** |
+
+> **中间件原位覆盖（v0.7）**：`middleware=[你的实例]` 的 `.name` 与内置同名 → **在原位替换**默认实例（保留栈顺序），可调 Summarization 的 `trigger/keep/model/prompt` 而不拆 Harness。是**整实例替换**，不是字段 merge——替换实例要自带 backend 等完整配置。默认 `general-purpose` 子 Agent 继承主 Agent 覆盖；声明式子 Agent 独立配自己的栈。
 
 **条件层（5 个，按参数自动激活）：**
 
@@ -700,6 +785,83 @@ MCP 工具     → Server ACL + Interceptor + HITL  ← MCP 集成节
 ```
 
 > **最佳实践**：① 沙箱资源不论成败都在 `finally` 中清理；② 凭证永远优先留在沙箱外（宿主侧工具 > Auth Proxy > 注入沙箱）；③ 沙箱输出默认不可信，审查后再使用。
+
+### 2.8 动态子 Agent（Dynamic Subagents，Beta）
+
+> 普通 `task` 工具 = 主模型**逐次**委派；Dynamic Subagents = 主模型写一段 JS，在**一次 `eval` 内多次调用 `task()`** 完成批量扇出/多阶段/迭代收敛（覆盖完整、无漏项、控制流稳定）。依赖 QuickJS Interpreter（`deepagents==0.7.x` + `langchain-quickjs` 核对）。
+
+```python
+agent = create_deep_agent(
+    model=model,
+    subagents=[
+        {"name": "reviewer", "description": "审查代码并给出文件、行号和证据",
+         "system_prompt": "只报告有代码证据的候选问题；稳定 ID 用'文件:行号:问题类型'。"},
+        {"name": "verifier", "description": "独立复核候选问题并优先识别误报",
+         "system_prompt": "重新读取代码，寻找反证后再确认或反驳。"},
+    ],
+    middleware=[CodeInterpreterMiddleware(mode="turn", subagents=True)],
+)
+```
+
+**`task()` 调用契约（JS 全局函数，仅三个字段）：**
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `description` | ✅ | 子 Agent 任务说明，需自包含（含文件路径等定位信息） |
+| `subagentType` | ✅ | 必须匹配 `subagents` 里的 `name` |
+| `responseSchema` | ❌ | JSON Schema 约束返回值；设置后直接得到 JS 对象（无需 JSON.parse） |
+
+```typescript
+const review = await task({ description: "检查 src/auth/login.ts，引用行号",
+  subagentType: "reviewer", responseSchema: {...} });
+```
+
+**使用要点：**
+- 用户请求里用 `workflow` 一词引导主模型走代码编排，并写清：输入范围 / 可用角色 / 先后与并行 / 去重、数量上限、停止条件、最终返回
+- 每次 `task()` 都启动**完整子 Agent 推理循环**；`max_ptc_calls` 只管 `tools.*`，**没有 `max_task_calls` 参数**——调度量靠输入批次 + 循环上限 + 提示词约束
+- 单次明确委派仍用普通 `task` 工具；异步长程后台任务用 §6 Async Subagents（生命周期目标不同）
+- 模型能力不足时 JS 可能语法错误/角色名漂移/循环失控 → 运行前人工检查生成代码
+
+### 2.9 运行时验收（RubricMiddleware 评分量规，Beta）
+
+> 解决"Agent 说完成 ≠ 通过验收"：Working Model 生成候选 → Grader Model 按 Rubric + Evidence Tool 证据评审 → `needs_revision` 携差距回炉修订 → 只有 `satisfied` 放行。`RubricMiddleware` 需要 `deepagents>=0.6.5`，本章案例按 0.7.x 核对；Beta API。
+
+```python
+from deepagents import RubricMiddleware
+from deepagents.middleware.rubric import RubricEvaluation
+
+rubric_middleware = RubricMiddleware(
+    model=grader_model,                       # 评分模型（必填，可同/低于工作模型）
+    system_prompt="...strict grader...",      # 约束评分方式，不替代 Rubric
+    tools=[run_test_suite],                   # 取证工具——只给评分模型，不会成为工作模型工具！
+    max_iterations=3,                         # 一次评分尝试最多 N 轮（非"至少修订 3 次"）
+    on_evaluation=record_evaluation,          # 每轮 RubricEvaluation 回调（日志/指标，非控制钩子）
+)
+
+agent = create_deep_agent(
+    model=working_model,
+    middleware=[rubric_middleware],
+    checkpointer=InMemorySaver(),
+)
+
+# Rubric 是调用状态，不是构造参数——每次 invoke 传入：
+result = agent.invoke(
+    {"messages": [HumanMessage(content=task)], "rubric": rubric},
+    config={"configurable": {"thread_id": "..."}},
+)
+```
+
+**Rubric 编写三原则**：每条标准 = 可判定（一个可检查行为）+ 可取证（要求调用工具拿证据）+ 可修订（失败带 gap/用例/异常）。
+
+**评审结论与验收门（Fail-Closed）：**
+
+| 值 | 层次 | 是否接收结果 |
+|---|---|---|
+| `satisfied` | 本轮结论 | ✅ 是——唯一放行条件 |
+| `needs_revision` | 本轮结论 | ❌（有预算则修订回炉） |
+| `failed` / `grader_error` | 本轮结论 | ❌ |
+| `max_iterations_reached` | Middleware 运行终态 | ❌（预算耗尽） |
+
+> 最终消息存在 ≠ 通过验收。应用从 `on_evaluation` 累计记录里取最后一轮：`accepted = last_eval and last_eval["result"] == "satisfied"`，否则拒绝/转人工。事件流 `stream.custom` 有 `rubric_evaluation_start/end` 供 UI 显示进度。Rubric 不能替代沙箱/权限/HITL/离线评测。
 
 ## 3. 上下文工程（Context Engineering）
 
@@ -1114,14 +1276,36 @@ agent = create_deep_agent(
 6. **Backend 选型 →** `references/backends-guide.md`
 7. **子 Agent 详解 →** `references/subagents-guide.md`
 8. **Skills 详解 →** `references/skills-guide.md`
-9. **MCP 集成 →** `references/mcp-integration.md`（在 langchain-v1 skill 中）
+9. **MCP 集成 →** `references/mcp-integration.md`（在 langchain-v1 skill 中；langchain>=1.4 用 `MCPAdapter`）
 10. **沙箱选型 →** 本节 §2.7
+11. **代码编排（Interpreter/PTC/动态子Agent）→** 本节 §2.2 / §2.8
+12. **运行时验收 →** 本节 §2.9 RubricMiddleware；**实时展示 →** 本节 §12
+13. **v0.6→v0.7 迁移 →** 文首「版本基线」清单 + `rg` 扫描
 
 ---
 
 ## 10. MCP 集成（Model Context Protocol）
 
-> Deep Agents 通过 `langchain-mcp-adapters` 社区包接入 MCP 工具。MCP 工具与其他 LangChain 工具一致——Agent 像调用 `@tool` 一样调用 MCP Server 暴露的函数。
+> **两条接入路径，按版本选**：
+> - **`langchain>=1.4.0`（新）→ 内置 `langchain.mcp.MCPAdapter`**（基于 FastMCP；Beta，导入触发 `LangChainBetaWarning`）。安装 `uv add "langchain[mcp]"`。MCP 工具是异步工具（`await`）。
+> - **`langchain<1.4` 或存量代码 → `langchain-mcp-adapters` 的 `MultiServerMCPClient`**（10.1–10.5 全部适用）。官方已提供 [迁移指南](https://docs.langchain.com/oss/migrate/langchain-mcp-adapters)。
+
+```python
+# langchain>=1.4：MCPAdapter — target 自动推断传输（http(s) URL / Path→stdio / 进程内 FastMCP / MCPConfig 多 server / fastmcp.Client）
+from langchain.agents import create_agent
+from langchain.mcp import MCPAdapter
+
+async def main():
+    async with MCPAdapter("https://example.com/mcp") as adapter:   # str 必须是 http(s) URL
+        tools = await adapter.list_tools()
+        agent = create_deep_agent(model=model, tools=tools)         # create_agent / create_deep_agent 均可
+        return await agent.ainvoke({"messages": [...]})
+
+# 多 server：MCPAdapter({"mcpServers": {"a": {...}, "b": {...}}})
+# 进程内：MCPAdapter(fastmcp_instance)；脚本：MCPAdapter(Path("server.py"))
+```
+
+> 以下 10.1–10.5 以 `langchain-mcp-adapters` 为准（<1.4 / 存量路径），接入思路（Server ACL → Interceptor → HITL → 子 Agent 收缩 → 边界认知）与 v1.4 一致。
 
 ### 10.1 快速上手
 
@@ -1266,3 +1450,29 @@ agent = create_deep_agent(
 | 多模态 PDF/合同审核 | `create_deep_agent` + OCR + RAG + HITL | [文档审核Agent](docs/community/cases/LangChain%20v1.0%20文档审核类Agent开发实战.md) |
 | 全栈 Agent + MCP | `create_agent` + `MultiServerMCPClient` + FastAPI | [mini ChatGPT](docs/community/cases/Ep.01%20从零搭建mini%20ChatGPT（上）.md) |
 | OCR 多模态解析 | `create_agent` + MinerU/DeepSeek-OCR + vLLM | [OCR PDF](docs/community/cases/LangChain1.0%20+%20OCR%20多模态PDF解析实战.md) |
+
+---
+
+## 12. 实时事件流（Streaming）
+
+> 新应用用 **`stream_events(..., version="v3")`**（Typed Projections，产品视角）；`stream(..., version="v2")` 是 LangGraph 底层协议（`type/ns/data`），留给调试/迁移。两条流不要混用。
+
+**v3 顶层 projections（coordinator 层）**：`stream.messages` / `stream.tool_calls` / `stream.values`（state 快照，非增量） / `stream.subagents`（委派） / `stream.output`（最终输出）。
+
+**subagent handle 字段**：`name`（= `subagent_type`，仅显示）· `path`（tuple namespace 路径，**UI 卡片唯一键**，区分同名子 Agent）· `status`（started/completed/failed/interrupted）· 按需惰性打开的 `messages` / `tool_calls` / `values` / `subagents` / `output`（失败读取 output 会抛异常 → 渲染为错误）。
+
+```python
+# 实时 UI 顺序不失真：异步并发消费 或 同步 interleave
+stream = agent.stream_events(request, version="v3")
+for name, item in stream.interleave("messages", "subagents"):   # 同步 CLI 用
+    ...
+# 异步服务：asyncio.gather 同时消费 stream.messages 与 stream.subagents
+```
+
+**tool-call handle**：`tool_name` / `input`（可能含敏感数据，脱敏后再记） / `output_deltas`（增量，按序追加） / `completed` / `output` / `error`。状态三分支：`not completed`→running；`error`→failed；否则 completed。
+
+**raw protocol（需审计/重放时）**：`event["seq"]`（严格递增，排序用 seq 不用 timestamp）、`event["method"]`、`params["namespace"]`（`list[str]`，空=根层；子 Agent 事件以 `subagent.path` 为前缀，段格式 `<node>:<id>`）、`params["data"]`（按 method 解析，如 messages 的 content-block-delta → delta.text-delta）。
+
+**自定义进度事件**：工具内 `from langgraph.config import get_stream_writer` → `writer({"status": ..., "progress": ...})`，v2 从 `custom` 分支读，schema 由应用自定并加版本号。
+
+> path/namespace/ns 三处同源：v3 `subagent.path`(tuple) / v3 raw `params.namespace`(list) / v2 `chunk["ns"]`(tuple)。Streaming 不负责持久化/取消/背压——长任务要自己处理超时、断开、重放（写 Trace/DB）。
