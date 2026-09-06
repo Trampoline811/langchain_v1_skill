@@ -7,3 +7,6 @@ langchain_docs/
 .DS_Store
 zhihu-articles/
 CLAUDE.md
+
+.memsearch/
+
