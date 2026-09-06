@@ -2,18 +2,21 @@
 LangChain Skill 一键更新工具
 
 用法:
-  python update_skill.py              # 全量：拉取文档 → 清洗 → 提示更新
-  python update_skill.py --check     # 轻量检测：对比 llms.txt 看有没有新页面
-  python update_skill.py --docs-only  # 只拉取+清洗文档
-  python update_skill.py --test-only  # 只跑盲测（需手动提供测试代码）
-  python update_skill.py --package   # 打包上次结果到日期文件夹
+  python update_skill.py                # 全量：刷新清单 → 拉取文档 → 清洗 → 提示更新
+  python update_skill.py --check        # 轻量检测：对比官方 llms.txt 看有没有新页面
+  python update_skill.py --refresh      # 只刷新 urls.md（自动合并官方分区页面清单）
+  python update_skill.py --docs-only    # 只拉取+清洗文档（默认先自动 --refresh）
+  python update_skill.py --docs-only --no-refresh  # 拉取但跳过清单刷新
+  python update_skill.py --test-only    # 只跑盲测（需 .venv + API Key）
+  python update_skill.py --package      # 打包上次结果到日期文件夹
 
 工作流:
-  1. sync_docs()     → GitHub 拉取最新 .mdx → 清洗 → 保存到 langchain_docs/
-  2. diff_docs()     → 对比新旧文档，输出变更摘要
-  3. [手动] 根据 diff 更新 SKILL.md
-  4. run_tests()     → 跑 resume_agent.py 验证
-  5. package()       → 打包到 dated 文件夹
+  1. refresh_urls() → 官方分区 llms.txt 自动合并进 tools/urls.md
+  2. sync_docs()    → docs.langchain.com .md 直出拉取 → 清洗 → 保存到 docs/official/
+  3. diff_docs()    → 对比新旧文档，输出变更摘要
+  4. [手动] 根据 diff 更新 SKILL.md
+  5. run_tests()    → 跑 tests/ 盲测验证
+  6. package()      → 打包到 dated 文件夹
 """
 
 import os
@@ -48,10 +51,59 @@ def load_urls():
             if line.strip().startswith("https://")]
 
 
+LLMS_SECTIONS = ["langchain", "langgraph", "deepagents", "concepts", "contributing"]
+
+
+def refresh_urls():
+    """自动把官方分区 llms.txt 的现行页面合并进 tools/urls.md（去重、保序）
+
+    官方每季度会重排页面树；手工维护 urls.md 必然滞后。每次 --docs-only 前自动执行，
+    也可单独 `python tools/update_skill.py --refresh`。网络不可用时静默沿用现有清单。
+    """
+    import re
+    fetched: list[str] = []
+    for sec in LLMS_SECTIONS:
+        llms = f"https://docs.langchain.com/oss/python/{sec}/llms.txt"
+        try:
+            req = Request(llms, headers={"User-Agent": "LangChainSkillUpdater/1.0"})
+            with urlopen(req, timeout=60) as resp:
+                text = resp.read().decode("utf-8")
+            urls = sorted(set(re.findall(r'https://docs\.langchain\.com/oss/python/[^\s)]+', text)))
+            urls = [u.split('#')[0].rstrip('/') for u in urls]
+            fetched.extend(urls)
+            print(f"  refresh: {sec} = {len(urls)} 页")
+        except Exception as e:
+            print(f"  refresh {sec}: 失败（{e}），沿用现有清单")
+
+    if not fetched:
+        return None
+
+    existing = load_urls() if URLS_FILE.exists() else []
+    merged = list(dict.fromkeys(existing + fetched))
+    added = [u for u in fetched if u not in set(existing)]
+    removed = [u for u in existing if u not in set(fetched)]
+
+    if merged == existing:
+        print(f"  refresh: urls.md 已是最新（{len(merged)} 页）")
+        return {"total": len(merged), "added": 0, "removed": 0}
+
+    header = (
+        "# LangChain 官方文档源 URL 清单（由 update_skill.py --refresh 自动合并官方 llms.txt 生成）\n"
+        "# 上次刷新: {date}\n".format(date=datetime.now().strftime("%Y-%m-%d %H:%M"))
+    )
+    URLS_FILE.write_text(header + "\n".join(merged) + "\n", encoding="utf-8")
+    print(f"  refresh: urls.md 更新 -> {len(merged)} 页（+{len(added)} 新增 / -{len(removed)} 移除）")
+    return {"total": len(merged), "added": len(added), "removed": len(removed)}
+
+
 def url_to_raw(url: str) -> str:
-    """docs.langchain.com/oss/python/X → GitHub raw .mdx"""
-    path = url.replace("https://docs.langchain.com/oss/python/", "")
-    return f"{GITHUB_RAW_BASE}/{path}.mdx"
+    """docs.langchain.com 页面 → 官方 .md 直出地址
+
+    官方源码树已从 src/oss/python/* 重构到 src/oss/{langchain,deepagents,langgraph}/*，
+    GitHub raw oss/python 映射已失效。docs.langchain.com 对任意页面支持 `<url>.md`
+    直接返回 Markdown（含前置 Documentation Index 提示块，由 clean_mdx 剥离）。
+    """
+    return url + ".md"
 
 
 def url_to_name(url: str) -> str:
@@ -90,10 +142,10 @@ def add_frontmatter(text: str, url: str) -> str:
 
 
 def fetch_mdx(raw_url: str) -> tuple[str | None, int]:
-    """拉取单个 .mdx 文件，返回 (内容, 状态码)"""
+    """拉取单个文档页（docs.langchain.com .md 直出），返回 (内容, 状态码)"""
     try:
         req = Request(raw_url, headers={"User-Agent": "LangChainSkillUpdater/1.0"})
-        with urlopen(req, timeout=15) as resp:
+        with urlopen(req, timeout=60) as resp:
             return resp.read().decode("utf-8"), resp.status
     except HTTPError as e:
         return None, e.code
@@ -102,14 +154,25 @@ def fetch_mdx(raw_url: str) -> tuple[str | None, int]:
 
 
 def clean_mdx(text: str) -> str:
-    """清洗 MDX → 纯净 Markdown"""
+    """清洗文档页 → 纯净 Markdown（适配 docs.langchain.com 的 .md 直出格式）"""
     import re
     md = text
+    # 剥离 .md 直出页顶部的 Documentation Index 提示块
+    md = re.sub(r'^>\s*## Documentation Index.*?(?=^# |\Z)', '', md, flags=re.MULTILINE | re.DOTALL)
+    # 代码块 info 串：```python Google theme={...} / ```python OpenAI → ```python
+    md = re.sub(r'^```(\S+)\s+\S+.*$', r'```\1', md, flags=re.MULTILINE)
+    # 残留 theme 属性（mermaid 等）
+    md = re.sub(r'\s*theme=\{[^}]*\}', '', md)
+    md = re.sub(r'\s*theme="[^"]*"', '', md)
+    # .md 直出为多 Provider 重复代码块（Google/OpenAI/Anthropic/OpenRouter/Fireworks/Baseten/Ollama）
+    # 清洗时不做去重（保留官方原文，体积换取完整性）；导入行 / 平台容器标签统一清理：
     md = re.sub(r'^import\s+.*$', '', md, flags=re.MULTILINE)
+    md = re.sub(r'<CodeGroup>|</CodeGroup>', '', md)
+    md = re.sub(r'<Tabs>|</Tabs>|<Tab\s+title="[^"]*">|</Tab>', '', md)
+    md = re.sub(r'<Steps>|</Steps>|<Step\s+title="[^"]*">|</Step>', '', md)
     md = re.sub(r'^:::python\s*$', '', md, flags=re.MULTILINE)
     md = re.sub(r'^:::js\s*$', '', md, flags=re.MULTILINE)
     md = re.sub(r'^:::$', '', md, flags=re.MULTILINE)
-    md = re.sub(r'</?CodeGroup>', '', md)
     md = re.sub(r'<Columns[^>]*>', '', md)
     md = re.sub(r'</Columns>', '', md)
     md = re.sub(
@@ -416,7 +479,11 @@ def main():
 
     if "--check" in args:
         check_llms()
+    elif "--refresh" in args:
+        refresh_urls()
     elif "--docs-only" in args:
+        if "--no-refresh" not in args:
+            refresh_urls()   # 先自动合并最新官方清单（网络失败则沿用现有）
         sync_docs()
         diff_docs()
     elif "--test-only" in args:

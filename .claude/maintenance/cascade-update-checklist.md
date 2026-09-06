@@ -143,9 +143,9 @@ grep "报告名" topics/INDEX.md
 ### C3. 部署同步
 
 ```bash
-# 先删后拷 4 个子技能 + 父技能（避免 cp -r 嵌套陷阱）
-rm -rf "E:/AI_skill/langchain-v1-suite"
-cp -r skills/langchain-v1-suite "E:/AI_skill/langchain-v1-suite/"
+# 2026-09-05 起 E:\AI_skill 与 ~/.agents/skills 均为 junction，指向真相源 → 无需同步动作
+# 仅在真相源目录结构变化（新增/删除/重命名技能）时重建链接，见 sync-strategy.md「重建 Junction 命令」
+# 旧命令（先删后拷）已废弃，勿再用 cp -r 覆盖 junction
 ```
 
 ---

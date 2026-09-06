@@ -5,7 +5,9 @@
 - **社区归档**（`docs/community/沧海九粟/`，本地不入库）：ch13 评分量规、ch14 Streaming、ch15 Interpreters、ch16 动态子 Agent、release-v0-7 发布说明，INDEX.md 同步
 - **deepagents-v1 skill**：版本基线更新至 v0.7（TodoListMiddleware opt-in / Backend Factory 移除 / 文件工具行为变化 / 同名中间件原位替换）；新增 QuickJS Interpreter+PTC、动态子 Agent、RubricMiddleware、Streaming v3 Typed Projections 四模块
 - **langchain-v1 skill**：MCP 集成指引 v1.4 分叉（内置 `langchain.mcp.MCPAdapter` 取代 `langchain-mcp-adapters`）
-- 盲测脚本未受影响（17/17）；部署副本 `E:\AI_skill\` 已按 sync-strategy 全量同步
+- 盲测：`tests/deep_agent.py` 适配 deepagents v0.7（StoreBackend 显式 namespace、FilesystemMiddleware 私有权限参数防御降级）；langchain/langgraph 盲测所用 API 不受版本影响
+- 工具链：`tools/update_skill.py` 改为官方 `docs.langchain.com/<url>.md` 直出拉取（官方源码树重构后旧 GitHub raw oss/python 映射已失效）；新增 `--refresh`：自动从官方分区 llms.txt 合并现行页面清单进 `tools/urls.md`（--docs-only 默认先刷新）
+- 部署：`E:\AI_skill\`（套件 + 4 平铺）与 `~/.agents/skills/langchain-v1` 改为 **junction 直通真相源**，改仓库即时生效，不再需要手动同步（`sync-strategy.md` / `cascade-update-checklist.md` §C3 已同步更新）；删除复制残留 `agent-sdk-router`
 
 ## 2026-07-03 — Skill 层级结构重构
 
