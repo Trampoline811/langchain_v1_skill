@@ -345,6 +345,19 @@ def api_node(state):
     ...
 ```
 
+### 8.1 官方错误码速查（langgraph 运行时）
+
+| 错误码 | 原因 | 修复 |
+|--------|------|------|
+| `GRAPH_RECURSION_LIMIT` | 图超过最大步数（默认递归上限） | 检查死循环/状态不变；复杂图用 `compile(recursion_limit=N)` 显式提高；或用 `Command(goto=...)` 收敛路径 |
+| `MISSING_CHECKPOINTER` | 用了内置持久化/中断但未传 checkpointer | `compile(checkpointer=InMemorySaver())`（或 SqliteSaver 等）；HITL/Time Travel/持久化都必须 |
+| `INVALID_CHAT_HISTORY` | `create_agent` 收到畸形消息列表（非 Message 对象/错误元组） | 检查 invoke 输入：必须是 `list[BaseMessage]` 或合法 shorthand 元组 |
+| `INVALID_CONCURRENT_GRAPH_UPDATE` | 多节点并发写同一不支持 reducer 的状态字段 | 给该字段加 `Annotated[..., operator.add]`/自定义 reducer，或避免 fanout 并发写 |
+| `INVALID_GRAPH_NODE_RETURN_VALUE` | 节点返回非 dict | 节点必须返回 `dict`（或 `Command`/`None` 按 API）——用 TypedDict 状态约束返回 |
+| `MULTIPLE_SUBGRAPHS` | 节点内多次调用带 continuation（interrupt）编译的子图 | 同一节点内只调一次带中断子图；需要多路 → 用 `Send`/不同节点，或子图 `checkpoint_during_continuation=False` 退出 |
+
+> 完整官方错误参考已镜像：`docs/official/langgraph/langgraph-errors-*.md`（本地文档源，不入库）。
+
 ---
 
 ## 9. 何时用 LangGraph？

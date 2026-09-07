@@ -194,6 +194,7 @@ def set_user_name(name: str, runtime: ToolRuntime) -> Command:
 | `HumanInTheLoopMiddleware` | 敏感操作需审批 | `interrupt_on={"tool_name": True}` |
 | `ToolRetryMiddleware` | 工具失败自动重试 | `max_retries=3, backoff_factor=2.0` |
 | `ModelRetryMiddleware` | 模型调用失败重试 | `max_retries=3` |
+| `ToolErrorMiddleware` | 工具异常转错误 ToolMessage 回喂 LLM（需 `langchain>=1.3.14`） | `on_error(exc, request) -> str \| None` |
 | `SummarizationMiddleware` | 长对话自动摘要 | `model=..., trigger=("tokens", 8000)` |
 | `PIIMiddleware` | 敏感信息脱敏 | `pii_type="email", strategy="redact"` |
 | `ModelFallbackMiddleware` | 模型降级链 | `ModelFallbackMiddleware(fast, slow, fallback)` |

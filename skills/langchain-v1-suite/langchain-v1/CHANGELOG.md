@@ -1,5 +1,10 @@
 # langchain-v1 更新日志
 
+## 2026-09-07 — 中间件对账：补 ToolErrorMiddleware
+
+- **补充** §5.1 内置中间件速查表 + `references/api-reference.md`：`ToolErrorMiddleware`（工具异常转错误 ToolMessage 回喂 LLM，`on_error(exc, request) -> str | None`，返回 None 则异常继续传播；**需 `langchain>=1.3.14`**）
+- **来源** 官方 `langchain/middleware/built-in` + `deepagents/fault-tolerance` 页（2026-09-07 镜像收尾对账；官方内置中间件全集 vs §5.1 表，唯一缺口即此条）
+
 ## 2026-09-05 — MCP 章节 v1.4 分叉更新（官方 changelog）
 
 - **更新** `references/mcp-integration.md` — 顶部新增「2026-09 版本分叉」：langchain>=1.4 内置 `langchain.mcp.MCPAdapter`（FastMCP，Beta）取代 `langchain-mcp-adapters`；MCPAdapter 单适配器多传输（http(s)/Path/进程内 FastMCP/MCPConfig 多 server）、elicitation 中断式提问、FastMCP 鉴权、`destructive_hint` HITL gating、str target 必须为 URL 的安全约束；原 MultiServerMCPClient 全章标注为 <1.4/存量路径 + 官方迁移链接

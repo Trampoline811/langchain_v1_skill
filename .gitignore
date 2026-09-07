@@ -9,4 +9,6 @@ zhihu-articles/
 CLAUDE.md
 
 .memsearch/
+docs_refresh.log
+docs_failed.json
 

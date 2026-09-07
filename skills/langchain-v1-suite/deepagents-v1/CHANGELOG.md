@@ -1,5 +1,10 @@
 # deepagents-v1 更新日志
 
+## 2026-09-07 — §2.8 动态子 Agent 补官方六模式 + RLM
+
+- **补充** §2.8：官方 dynamic-subagents 页六种编排模式速查表（Classify-and-act / Fan-out-and-synthesize / Adversarial verification / Generate-and-filter / Tournament / Loop-until-done）+ 递归语言模型（RLM）工作流说明 + `task()` 不经 tool-calling 路径（隔离/审批边界一致）注记
+- **来源** 官方 `deepagents/dynamic-subagents` 页（2026-09-07 镜像收尾补抓，此前因 .md 双后缀 bug 从未成功镜像）
+
 ## 2026-09-05 — v0.7 基线 + 新四大模块（沧海九粟 ch13-16 + 官方 changelog）
 
 - **新增** 文首「⚠️ 版本基线」：deepagents 0.6→0.7 breaking 对照表（TodoListMiddleware opt-in / Backend Factory 移除 + StoreBackend 显式 namespace / write_file 覆盖 + delete 工具 / 空 ls 返回 `No files found` / grep 1000 上限 + truncated / 同名中间件原位替换 / 空基础提示词 +65% 输入降耗）+ v0.6→v0.7 `rg` 静态扫描清单

@@ -1,5 +1,20 @@
 # CHANGELOG
 
+## 2026-09-07 — docs 镜像收尾：修复 .md 双后缀 bug + 中间件对账补 ToolErrorMiddleware
+
+- **根因修复**：官方 llms.txt 分区链接自带 `.md` 后缀，旧 `url_to_raw()` 二次追加 → 请求 `.md.md` 必 404（此前误判为"官方限流假 404"）。新增 `normalize_url()` 统一去尾 `.md`，`load_urls`/`refresh_urls`/`--retry-failed` 三处规范化
+- **urls.md 去重**：legacy 段与 refresh 合并段同一页面两种形态 → 去重后 367 → 215 条唯一 URL；剔除 KNOWN_DEAD（rss.xml 非页面资源、deepagents/code-link 官方死链、changelog-js/-py 六页 .md 直出返回 HTML）
+- **镜像完成**：215/215 全覆盖，`docs_failed.json` 清空（此前 172 "缺失" 中 144 为双后缀假缺失）
+- **中间件对账**：官方 middleware-built-in 页全集 vs langchain-v1 §5.1 速查表，唯一缺口 `ToolErrorMiddleware`（工具异常转错误 ToolMessage 回喂 LLM，需 `langchain>=1.3.14`）已补入 SKILL + references/api-reference.md
+- **新增镜像页**（此前因双后缀从未成功抓取）：langchain 错误码 8 页 + frontend generative-ui 4 页 + deepagents dynamic-subagents/fault-tolerance/multimodal/openwiki/rag/retrieval 6 页等；经查均无额外 skill API 缺口（dynamic-subagents/fault-tolerance 内容已由 deepagents-v1 先行覆盖）
+
+## 2026-09-06 — 全量 docs 刷新 + 入口文件对齐 + 盲测跑通
+
+- **官方 docs 全量刷新**：`docs.langchain.com` .md 直出全量镜像（含自动清单合并，367 条 URL）；脚本增强：限速 0.5s/页 + 失败重试（防官方批量限流假 404）+ `--section langchain|langgraph|deepagents|concepts` 分区分批拉取
+- **盲测实跑**（.venv, langchain 1.4.0 / deepagents 0.7.x）：`tests/langgraph_agent.py` 4/4、`tests/deep_agent.py` 7/7 通过（无 LLM 导入级）；`resume_agent.py` 需 `DEEPSEEK_API_KEY` 后跑
+- **入口文件对齐现状**：`CLAUDE.md`（本地）核心原则 1/2/3 与 Phase A ④ 更新为 junction/`.md 直出`语义、新增"官方更新了/刷 docs"触发词；`AGENTS.md`（入库）三层架构/仓库结构/发布策略/URL 说明/原则 5 全部对齐 2026-09 现状（此前仍是 4 技能平面 + agent-sdk-router 旧结构）
+- **git 排除** `.memsearch/`（记忆系统存储，避免误入库）
+
 ## 2026-09-05 — 沧海九粟 ch13-16 + 官方 v0.7/v1.4 全面同步
 
 - **社区归档**（`docs/community/沧海九粟/`，本地不入库）：ch13 评分量规、ch14 Streaming、ch15 Interpreters、ch16 动态子 Agent、release-v0-7 发布说明，INDEX.md 同步

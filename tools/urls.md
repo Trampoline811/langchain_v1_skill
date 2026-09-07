@@ -1,3 +1,5 @@
+# LangChain 官方文档源 URL 清单（由 update_skill.py --refresh 自动合并官方 llms.txt 生成）
+# 上次刷新: 2026-09-07 19:50（清理官方已迁移/合并页）
 https://docs.langchain.com/oss/python/langchain/overview
 https://docs.langchain.com/oss/python/langchain/install
 https://docs.langchain.com/oss/python/langchain/quickstart
@@ -35,7 +37,6 @@ https://docs.langchain.com/oss/python/langchain/retrieval
 https://docs.langchain.com/oss/python/langchain/long-term-memory
 https://docs.langchain.com/oss/python/langchain/deep-agent-from-scratch
 https://docs.langchain.com/oss/python/langchain/knowledge-base
-https://docs.langchain.com/oss/python/langchain/rag
 https://docs.langchain.com/oss/python/langchain/sql-agent
 https://docs.langchain.com/oss/python/langchain/voice-agent
 https://docs.langchain.com/oss/python/langchain/multi-agent/subagents-personal-assistant
@@ -57,15 +58,6 @@ https://docs.langchain.com/oss/python/deepagents/a2a
 https://docs.langchain.com/oss/python/deepagents/acp
 https://docs.langchain.com/oss/python/deepagents/async-subagents
 https://docs.langchain.com/oss/python/deepagents/backends
-https://docs.langchain.com/oss/python/deepagents/changelog-py
-https://docs.langchain.com/oss/python/deepagents/code/configuration
-https://docs.langchain.com/oss/python/deepagents/code/data-locations
-https://docs.langchain.com/oss/python/deepagents/code/mcp-tools
-https://docs.langchain.com/oss/python/deepagents/code/memory-and-skills
-https://docs.langchain.com/oss/python/deepagents/code/overview
-https://docs.langchain.com/oss/python/deepagents/code/providers
-https://docs.langchain.com/oss/python/deepagents/code/remote-sandboxes
-https://docs.langchain.com/oss/python/deepagents/code/subagents
 https://docs.langchain.com/oss/python/deepagents/comparison
 https://docs.langchain.com/oss/python/deepagents/context-engineering
 https://docs.langchain.com/oss/python/deepagents/customization
@@ -75,7 +67,6 @@ https://docs.langchain.com/oss/python/deepagents/frontend/sandbox
 https://docs.langchain.com/oss/python/deepagents/frontend/subagent-streaming
 https://docs.langchain.com/oss/python/deepagents/frontend/todo-list
 https://docs.langchain.com/oss/python/deepagents/going-to-production
-https://docs.langchain.com/oss/python/deepagents/harness
 https://docs.langchain.com/oss/python/deepagents/human-in-the-loop
 https://docs.langchain.com/oss/python/deepagents/interpreters
 https://docs.langchain.com/oss/python/deepagents/mcp
@@ -92,10 +83,8 @@ https://docs.langchain.com/oss/python/deepagents/streaming
 https://docs.langchain.com/oss/python/deepagents/subagents
 https://docs.langchain.com/oss/python/deepagents/tools
 https://docs.langchain.com/oss/python/langchain/academy
-https://docs.langchain.com/oss/python/langchain/changelog-py
 https://docs.langchain.com/oss/python/langchain/deploy
 https://docs.langchain.com/oss/python/langchain/frontend/branching-chat
-https://docs.langchain.com/oss/python/langchain/frontend/generative-ui
 https://docs.langchain.com/oss/python/langchain/frontend/headless-tools
 https://docs.langchain.com/oss/python/langchain/frontend/human-in-the-loop
 https://docs.langchain.com/oss/python/langchain/frontend/join-rejoin
@@ -116,7 +105,6 @@ https://docs.langchain.com/oss/python/langgraph/add-memory
 https://docs.langchain.com/oss/python/langgraph/application-structure
 https://docs.langchain.com/oss/python/langgraph/backward-compatibility
 https://docs.langchain.com/oss/python/langgraph/case-studies
-https://docs.langchain.com/oss/python/langgraph/changelog-py
 https://docs.langchain.com/oss/python/langgraph/checkpointers
 https://docs.langchain.com/oss/python/langgraph/choosing-apis
 https://docs.langchain.com/oss/python/langgraph/deploy
@@ -148,7 +136,6 @@ https://docs.langchain.com/oss/python/migrate/langchain-v1
 https://docs.langchain.com/oss/python/migrate/langgraph-v1
 https://docs.langchain.com/oss/python/releases/langchain-v1
 https://docs.langchain.com/oss/python/releases/langgraph-v1
-https://docs.langchain.com/oss/python/build-overview
 https://docs.langchain.com/oss/python/common-errors
 https://docs.langchain.com/oss/python/contributing/code
 https://docs.langchain.com/oss/python/contributing/comarketing
@@ -190,7 +177,29 @@ https://docs.langchain.com/oss/python/reference/langchain-python
 https://docs.langchain.com/oss/python/reference/langgraph-python
 https://docs.langchain.com/oss/python/reference/overview
 https://docs.langchain.com/oss/python/release-policy
-https://docs.langchain.com/oss/python/releases/changelog/rss.xml
 https://docs.langchain.com/oss/python/security-policy
 https://docs.langchain.com/oss/python/studio
 https://docs.langchain.com/oss/python/versioning
+https://docs.langchain.com/oss/python/langchain/errors/INVALID_PROMPT_INPUT
+https://docs.langchain.com/oss/python/langchain/errors/INVALID_TOOL_RESULTS
+https://docs.langchain.com/oss/python/langchain/errors/MESSAGE_COERCION_FAILURE
+https://docs.langchain.com/oss/python/langchain/errors/MODEL_AUTHENTICATION
+https://docs.langchain.com/oss/python/langchain/errors/MODEL_NOT_FOUND
+https://docs.langchain.com/oss/python/langchain/errors/MODEL_RATE_LIMIT
+https://docs.langchain.com/oss/python/langchain/errors/OUTPUT_PARSING_FAILURE
+https://docs.langchain.com/oss/python/langchain/frontend/controlled-generative-ui
+https://docs.langchain.com/oss/python/langchain/frontend/declarative-generative-ui
+https://docs.langchain.com/oss/python/langchain/frontend/generative-ui-overview
+https://docs.langchain.com/oss/python/langchain/frontend/open-ended-generative-ui
+https://docs.langchain.com/oss/python/langgraph/errors/GRAPH_RECURSION_LIMIT
+https://docs.langchain.com/oss/python/langgraph/errors/INVALID_CHAT_HISTORY
+https://docs.langchain.com/oss/python/langgraph/errors/INVALID_CONCURRENT_GRAPH_UPDATE
+https://docs.langchain.com/oss/python/langgraph/errors/INVALID_GRAPH_NODE_RETURN_VALUE
+https://docs.langchain.com/oss/python/langgraph/errors/MISSING_CHECKPOINTER
+https://docs.langchain.com/oss/python/langgraph/errors/MULTIPLE_SUBGRAPHS
+https://docs.langchain.com/oss/python/deepagents/dynamic-subagents
+https://docs.langchain.com/oss/python/deepagents/fault-tolerance
+https://docs.langchain.com/oss/python/deepagents/multimodal
+https://docs.langchain.com/oss/python/deepagents/openwiki
+https://docs.langchain.com/oss/python/deepagents/rag
+https://docs.langchain.com/oss/python/deepagents/retrieval

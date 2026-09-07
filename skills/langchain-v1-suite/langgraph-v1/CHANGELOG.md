@@ -1,5 +1,10 @@
 # langgraph-v1 更新日志
 
+## 2026-09-07 — 新增 §8.1 官方错误码速查
+
+- **新增** §8.1 错误码速查：6 个官方运行时错误（GRAPH_RECURSION_LIMIT / MISSING_CHECKPOINTER / INVALID_CHAT_HISTORY / INVALID_CONCURRENT_GRAPH_UPDATE / INVALID_GRAPH_NODE_RETURN_VALUE / MULTIPLE_SUBGRAPHS）原因 + 修复表
+- **来源** 官方 `langgraph/errors/*` 页（2026-09-07 镜像收尾补抓，此前因 .md 双后缀 bug 从未成功镜像）
+
 ## 2026-06-14 (Step 5b — 官方文档同步)
 
 - **扩展** §4 持久化: 新增 `AsyncSqliteSaver` / `AsyncPostgresSaver` backend、自定义序列化 `JsonPlusSerializer(pickle_fallback=True)`、`get_state()` / `get_state_history()` API

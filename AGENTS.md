@@ -27,79 +27,56 @@
 > 术语来源：Harrison Chase, "[Agent Frameworks, Runtimes, and Harnesses- oh my!](https://www.langchain.com/blog/agent-frameworks-runtimes-and-harnesses-oh-my)" (2025.10)
 
 ```
-agent-sdk-router   ← 入口决策：Framework / Runtime / Harness？
-    │
-    ├── langchain-v1   ← Agent Framework（create_agent, @tool, middleware, checkpointer）
-    │                     LangChain 1.0 的 agent loop 跑在 LangGraph runtime 之上
-    │
-    ├── langgraph-v1   ← Agent Runtime（StateGraph, Functional API, persistence, HITL, subgraphs）
-    │                     durable execution / streaming / HITL / persistence
-    │
-    └── deepagents-v1  ← Agent Harness（规划 + 文件系统 + 子Agent + 记忆 全部内置）
-                         create_deep_agent() — 预组装电池包
+langchain-v1-suite  ← 层级入口：路由决策表 + 子技能索引（吸收原 agent-sdk-router）
+    ├── langchain-v1     ← Agent Framework（create_agent, @tool, middleware, checkpointer）
+    ├── langgraph-v1     ← Agent Runtime（StateGraph, Functional API, persistence, HITL, subgraphs）
+    ├── deepagents-v1    ← Agent Harness（规划 + 文件系统 + 子Agent + 记忆 + Rubric/Interpreter）
+    └── langsmith-trace  ← Observability（跨层排障）
 ```
 
 **决策逻辑**：
 - 能用 `create_agent()` 解决的 → LangChain（90%场景）
 - 需要自定义图拓扑/持久化/中断 → LangGraph
 - 复杂多步自主任务 → DeepAgents
-- 不确定 → `/agent-sdk-router`
+- 不确定 → 读父技能 `skills/langchain-v1-suite/SKILL.md` 路由决策表
 
 ## 仓库结构
 
 ```
 langchain_v1/
 ├── README.md                     # 公开入口 — 面向最终用户的简明说明
-├── AGENTS.md                     # 本文件 — 维护者专用，不推送（.gitignore）
-├── skills/                       # 核心产物 — 4 个 Codex Skill
-│   ├── agent-sdk-router/         # 入口路由 skill（30行）
-│   │   └── SKILL.md
-│   ├── langchain-v1/             # Framework skill（426行 + 5个reference）
-│   │   ├── SKILL.md
-│   │   ├── CHANGELOG.md
-│   │   └── references/           # 详细API参考、决策指南、迁移对比等
-│   │       ├── api-reference.md
-│   │       ├── decision-guide.md
-│   │       ├── mcp-integration.md
-│   │       ├── migration-comparison.md
-│   │       └── patterns.md
-│   ├── langgraph-v1/             # Runtime skill（362行）
-│   │   ├── SKILL.md
-│   │   └── CHANGELOG.md
-│   └── deepagents-v1/            # Harness skill（560行）
-│       ├── SKILL.md
-│       └── CHANGELOG.md
-├── docs/                         # 文档素材 — skill 的源头（.gitignore 排除）
-│   ├── official/                  # 官方文档下载副本（106个文件）
-│   │   ├── langchain/             #   LangChain Framework（44个）
-│   │   ├── langgraph/             #   LangGraph Runtime（25个）
-│   │   ├── deepagents/            #   Deep Agents Harness（32个）
-│   │   ├── concepts/              #   跨产品概念（4个）
-│   │   └── releases-changelog.md  #   版本日志
-│   └── community/                 # 🆕 社区/实战案例
-│       ├── cases/                 #   完整项目示例
-│       └── patterns/              #   代码模式、最佳实践
+├── AGENTS.md                     # 本文件 — 项目维护指南（已入库，随仓库推送）
+├── CLAUDE.md                     # Claude Code 维护入口（.gitignore，仅本地）
+├── skills/                       # 核心产物 — 唯一真相源（1 父技能 + 4 子技能）
+│   └── langchain-v1-suite/
+│       ├── SKILL.md              # 父技能：路由决策表 + 子技能索引 + CHANGELOG
+│       ├── CHANGELOG.md
+│       ├── langchain-v1/         # Framework skill（SKILL + CHANGELOG + references/* 多份）
+│       ├── langgraph-v1/         # Runtime skill（SKILL + CHANGELOG + references/）
+│       ├── deepagents-v1/        # Harness skill（SKILL + CHANGELOG + references/）
+│       └── langsmith-trace/      # Observability skill（SKILL + CHANGELOG + reference/）
+├── docs/                         # 文档素材 — skill 的源头（.gitignore 排除，不推送）
+│   ├── official/                 #   官方文档镜像（.md 直出，按 langchain/langgraph/deepagents 分目录）
+│   │   └── releases-changelog.md #   版本日志
+│   └── community/                #   社区素材（沧海九粟/赋范 等，含 INDEX.md）
+├── topics/                       # 专题研究报告（基于 docs/ 加工）
 ├── tools/                        # 维护工具
-│   ├── update_skill.py           # 自动化同步脚本
-│   └── urls.md                   # 官方文档源URL清单（~110条）
-├── tests/                        # 盲测验证
-│   ├── blind_test.md             # 盲测方法
-│   ├── blind_test_analysis.md    # 盲测分析报告
-│   ├── maintenance_guide.md      # 维护流程指南
-│   └── resume_agent.py           # 功能验证用例
-└── results/                      # 盲测结果归档
-    └── 20250602/                 # 按日期归档
+│   ├── update_skill.py           # 官方 .md 直出同步 + --refresh 自动合并清单 + 盲测/打包
+│   └── urls.md                   # 官方 URL 清单（可由 --refresh 自动更新）
+├── tests/                        # 盲测验证（resume_agent / langgraph_agent / deep_agent，17/17）
+└── results/                      # 盲测结果归档（按日期）
 ```
 
 ## 对外发布策略
 
-**`AGENTS.md` 不推送到 GitHub/Gitee**。他人 clone 仓库后只看到：
+仓库推送内容（GitHub/Gitee）：
 - `README.md` — 项目说明、三层架构、安装方式、选型速查
-- `skills/` — 可直接使用的 4 个 Skill
-- `docs/` — 已通过 `.gitignore` 排除（素材，最终用户不需要）
-- `tools/` — 仅维护者需要
+- `AGENTS.md` / `skills/`（langchain-v1-suite 整套） — 可直接使用
+- `tools/` `tests/` `topics/` `.claude/` `CHANGELOG.md` — 维护上下文
 
-`.gitignore` 已排除：`docs/`、`.venv/`、`__pycache__/`、`*.pyc`、`.docs_cache.json`、`langchain_docs/`、`AGENTS.md`
+`.gitignore` 已排除：`docs/`、`.venv/`、`__pycache__/`、`*.pyc`、`.docs_cache.json`、`langchain_docs/`、`.memsearch/`、`CLAUDE.md`、`docs_refresh.log`、`docs_failed.json`
+
+> **部署副本**：`E:\AI_skill\`（套件 + 4 平铺）与 `~/.agents/skills/langchain-v1` 为 **junction 直通真相源**（2026-09-05 起），零同步、禁 cp 覆盖，详见 `.claude/maintenance/sync-strategy.md`。
 
 ## 维护流程
 
@@ -117,18 +94,20 @@ langchain_v1/
 #### Step 1：同步官方文档
 
 ```bash
-# 下载最新的官方 .mdx 文件
+# 下载最新的官方文档（.md 直出；默认先自动 --refresh 合并官方 llms.txt 清单）
 python tools/update_skill.py --docs-only
+# 仅刷新 urls.md 清单： python tools/update_skill.py --refresh
 
-# 或手动：从 docs.langchain.com 拉取最新页面
-# URL → GitHub raw .mdx 映射规则：
-# docs.langchain.com/oss/python/X → raw.githubusercontent.com/langchain-ai/docs/main/src/oss/X.mdx
+# 官方源码树已重构（src/oss/python/* → src/oss/{langchain,deepagents,langgraph}/*），
+# 旧"GitHub raw .mdx"映射会 404；现统一走 docs.langchain.com/<page>.md 直出（脚本已内置重试+限速）
 ```
 
 #### Step 2：对比差异
 
 ```bash
-git diff docs/
+# docs/ 不入库（.gitignore），无 git diff；以脚本输出为准：
+python tools/update_skill.py --docs-only   # 看 Results: X new | Y updated | W failed
+# .docs_cache.json 记录每个页面的内容 hash，UPDATED 即内容有变化
 ```
 
 重点关注：
@@ -168,31 +147,18 @@ diff llms_old.txt llms_new.txt
 
 ## 官方文档源 URL
 
-全部来源：`https://docs.langchain.com/oss/python/`
+全部来源：`https://docs.langchain.com/oss/python/`（现行分区：**langchain 79 / langgraph 43 / deepagents 40 / concepts 4**，2026-09-05 由官方 llms.txt 核对）
 
-### LangChain Framework（~50条）
-在 `tools/urls.md` 中维护完整列表，包括：
-- 核心：overview, quickstart, agents, models, tools, messages
-- 中间件：middleware/overview, middleware/built-in, middleware/custom
-- 前端集成：frontend/overview, frontend/integrations/*
-- 多智能体：multi-agent/* (subagents, handoffs, skills, router, custom-workflow)
-- 进阶：streaming, structured-output, context-engineering, RAG, guardrails
-- 集成：MCP, SQL agent, voice agent, knowledge-base
-
-### LangGraph Runtime（约5-10条）
-- graph-api, agentic-rag, sql-agent
-- concepts/products, concepts/providers-and-models, concepts/memory, concepts/context
-
-### Deep Agents Harness（约3-5条）
-- data-analysis, deep-research, content-builder
+- 完整清单：`tools/urls.md`（由 `python tools/update_skill.py --refresh` 自动从官方分区 llms.txt 合并，**不要手工维护 URL**）
+- 关键页覆盖：langchain agents/models/tools/messages/middleware{overview,built-in,custom}/mcp/multi-agent{handoffs,subagents,skills,router}/frontend、langgraph graph-api/use-graph-api/functional-api/persistence/checkpointers/stores/pregel/streaming/fault-tolerance、deepagents overview/backends/tools/subagents/skills/sandboxes/interpreters/rubric/permissions/customization/profiles/event-streaming
 
 ## 核心原则
 
-1. **不要手动维护 API 签名** — 从 GitHub 拉最新 .mdx 是最准确的
+1. **不要手动维护 API 签名** — 官方 docs 全量镜像用 `update_skill.py --docs-only`（.md 直出 + 自动刷新清单）
 2. **diff 驱动更新** — 只看变化部分，不重写整个 skill
-3. **保留盲测用例** — `resume_agent.py` 每次更新后跑一遍
-4. **版本标注** — 在 SKILL.md frontmatter 中记录基于哪个版本的文档
-5. **AGENTS.md 不推送** — 维护上下文仅本地使用
+3. **保留盲测用例** — `tests/*.py` 每次更新后在 `.venv` 中跑一遍（17/17）
+4. **版本标注** — 在 SKILL.md frontmatter / CHANGELOG 记录基于哪个版本
+5. **部署 junction** — `E:\AI_skill\` 与 `~/.agents/skills/langchain-v1` 为 junction，改 `skills/` 即生效，禁 cp 覆盖
 6. **GitHub + Gitee 同步** — 每次 push 同时推两个远端
 
 ## 已知问题 & 待办

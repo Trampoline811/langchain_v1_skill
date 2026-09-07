@@ -1,5 +1,11 @@
 # langchain-v1-suite CHANGELOG
 
+## 2026-09-07 — docs 镜像收尾对账（.md 双后缀 bug 修复 + ToolErrorMiddleware 补齐）
+
+- **langchain-v1**：§5.1 速查表 + api-reference 补 `ToolErrorMiddleware`（需 langchain>=1.3.14），官方内置中间件全集对账唯一缺口
+- **langgraph-v1 / langsmith-trace / deepagents-v1**：本轮镜像收尾对账无新增 API 缺口（dynamic-subagents / fault-tolerance / rubric 内容已由 2026-09-05 同步先行覆盖）
+- **来源** 官方 middleware/built-in + fault-tolerance + 全量 llms.txt 镜像（215 唯一 URL 全覆盖，docs_failed.json 清空）
+
 ## 2026-09-05 — 2026-09 全面同步（沧海九粟 ch13-16 + 官方 v0.7/v1.4）
 
 - **deepagents-v1**：新增 v0.7 版本基线（breaking 对照 + 迁移扫描清单）、QuickJS Interpreters/PTC（§2.2 重写）、动态子 Agent（§2.8）、RubricMiddleware 评分量规（§2.9）、Streaming v3（§12）、MCPAdapter 双轨（§10）

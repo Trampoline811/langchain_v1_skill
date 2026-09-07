@@ -820,6 +820,20 @@ const review = await task({ description: "检查 src/auth/login.ts，引用行�
 - 每次 `task()` 都启动**完整子 Agent 推理循环**；`max_ptc_calls` 只管 `tools.*`，**没有 `max_task_calls` 参数**——调度量靠输入批次 + 循环上限 + 提示词约束
 - 单次明确委派仍用普通 `task` 工具；异步长程后台任务用 §6 Async Subagents（生命周期目标不同）
 - 模型能力不足时 JS 可能语法错误/角色名漂移/循环失控 → 运行前人工检查生成代码
+- 支持**递归语言模型（RLM）**工作流：子 Agent 结果可再次作为输入调度下一层 `task()`，形成递归分解
+
+**六种编排模式（官方，interpreter 代码内 `task()` 组合）：**
+
+| 模式 | 形态 | 适用 |
+|------|------|------|
+| **Classify and act** | 先分类再分发：按输入类型 `if/else` 选不同 `subagentType` | 异构输入需要差异化处理 |
+| **Fan-out and synthesize** | 并行扇出（`Promise.all` 多路 `task()`）→ 汇总合成 | 大批量独立子任务，覆盖完整无漏项 |
+| **Adversarial verification** | 生成者 vs 验证者互搏：候选 → 独立复核找反证 | 高可信要求（代码审查、事实核验） |
+| **Generate and filter** | 批量生成 → 按约束过滤（`filter` 淘汰不合格项） | 候选池 + 质量门槛（内容生成） |
+| **Tournament** | 锦标赛逐轮淘汰：多路生成 → 两两对比选优 | 多方案择优（代码改写选最优变体） |
+| **Loop until done** | 迭代循环直到满足停止条件（带次数上限防失控） | 渐进收敛型任务（重写直到通过测试） |
+
+> `task()` 从运行中的 `eval` 内部派发，不经过普通 tool-calling 路径 → 隔离默认、审批边界与普通工具调用一致；`max_ptc_calls` 不约束 `task()`，调度上限靠代码结构（循环/批次）自行控制。
 
 ### 2.9 运行时验收（RubricMiddleware 评分量规，Beta）
 

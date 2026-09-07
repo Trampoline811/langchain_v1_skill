@@ -23,6 +23,7 @@ import os
 import sys
 import json
 import shutil
+import time
 import hashlib
 from pathlib import Path
 from datetime import datetime
@@ -36,6 +37,7 @@ RAW_DIR = DOCS_DIR / ".raw"           # 原始 .mdx 缓存
 SKILL_DIR = ROOT / "skills"           # skills 目录
 URLS_FILE = ROOT / "tools" / "urls.md"  # URL 源清单
 CACHE_FILE = ROOT / ".docs_cache.json"  # SHA256 缓存
+FAILED_FILE = ROOT / "docs_failed.json"  # 上次失败的 URL（供 --retry-failed）
 
 GITHUB_RAW_BASE = "https://raw.githubusercontent.com/langchain-ai/docs/main/src/oss"
 
@@ -44,14 +46,43 @@ GITHUB_RAW_BASE = "https://raw.githubusercontent.com/langchain-ai/docs/main/src/
 # 1. 文档同步
 # ═══════════════════════════════════════════════════════
 
+def normalize_url(url: str) -> str:
+    """URL 规范化：去锚点/尾斜杠/尾 .md
+
+    官方 llms.txt 分区的链接自带 .md 后缀（Markdown 直出地址），
+    而 legacy 段为无后缀页面 URL。统一存无 .md 的页面 URL，
+    fetch 时由 url_to_raw 追加 .md，避免 .md.md 双后缀 404。
+    """
+    u = url.split('#')[0].rstrip('/')
+    return u[:-3] if u.endswith('.md') else u
+
+
 def load_urls():
-    """从 urls.md 加载所有 URL"""
+    """从 urls.md 加载所有 URL（规范化 + 去重保序）"""
     text = URLS_FILE.read_text(encoding="utf-8")
-    return [line.strip() for line in text.splitlines()
-            if line.strip().startswith("https://")]
+    seen = set()
+    out = []
+    for line in text.splitlines():
+        if line.strip().startswith("https://"):
+            u = normalize_url(line.strip())
+            if u not in seen and not any(dead in u for dead in KNOWN_DEAD):
+                seen.add(u)
+                out.append(u)
+    return out
 
 
 LLMS_SECTIONS = ["langchain", "langgraph", "deepagents", "concepts", "contributing"]
+
+# 已知死链/非页面资源：官方 llms.txt 偶发滞后（页面未发布仍列出）或 legacy 遗留资源
+# （rss.xml 是 RSS feed 非 .md 页面）。过滤后不请求、不被 --refresh 加回。
+KNOWN_DEAD = (
+    "/oss/python/releases/changelog/rss.xml",   # RSS feed，无 .md 直出
+    "/oss/python/deepagents/code-link",          # 官方 llms.txt 列出但页面 404（Deep Agents Code 未发布）
+    # changelog-js/changelog-py 的 .md 直出返回 HTML（重定向到 SPA 渲染的 releases/changelog），
+    # 非 Markdown 无法镜像；官方真实 changelog 见 docs/official/releases-changelog.md（另有维护）
+    "/changelog-js",
+    "/changelog-py",
+)
 
 
 def refresh_urls():
@@ -69,7 +100,7 @@ def refresh_urls():
             with urlopen(req, timeout=60) as resp:
                 text = resp.read().decode("utf-8")
             urls = sorted(set(re.findall(r'https://docs\.langchain\.com/oss/python/[^\s)]+', text)))
-            urls = [u.split('#')[0].rstrip('/') for u in urls]
+            urls = sorted(set(normalize_url(u) for u in urls if not any(dead in u for dead in KNOWN_DEAD)))
             fetched.extend(urls)
             print(f"  refresh: {sec} = {len(urls)} 页")
         except Exception as e:
@@ -142,15 +173,28 @@ def add_frontmatter(text: str, url: str) -> str:
 
 
 def fetch_mdx(raw_url: str) -> tuple[str | None, int]:
-    """拉取单个文档页（docs.langchain.com .md 直出），返回 (内容, 状态码)"""
-    try:
-        req = Request(raw_url, headers={"User-Agent": "LangChainSkillUpdater/1.0"})
-        with urlopen(req, timeout=60) as resp:
-            return resp.read().decode("utf-8"), resp.status
-    except HTTPError as e:
-        return None, e.code
-    except Exception as e:
-        return None, -1
+    """拉取单个文档页（docs.langchain.com .md 直出），返回 (内容, 状态码)
+
+    带重试：docs.langchain.com 对高频连续请求会临时限流（表现为假 404/429），
+    失败时退避重试 3 次。
+    """
+    delays = [2.0, 5.0]
+    for attempt, delay in enumerate(delays + [0.0]):
+        try:
+            req = Request(raw_url, headers={"User-Agent": "Mozilla/5.0 (LangChainSkillUpdater/1.0)"})
+            with urlopen(req, timeout=25) as resp:
+                return resp.read().decode("utf-8"), resp.status
+        except HTTPError as e:
+            if e.code in (404, 429, 500, 502, 503) and attempt < len(delays):
+                time.sleep(delay)
+                continue
+            return None, e.code
+        except Exception as e:
+            if attempt < len(delays):
+                time.sleep(delay)
+                continue
+            return None, -1
+    return None, -1
 
 
 def clean_mdx(text: str) -> str:
@@ -213,17 +257,31 @@ def sync_docs():
 
     文件名: {category}/{category}-{page}.md
     根目录文件（无类别前缀）: {page}.md
+    支持 --retry-failed：只重试上次失败的 URL（缓存命中的页直接跳过，不再发请求）
     """
     print("=" * 60)
     print("  Step 1: 同步官方文档")
     print("=" * 60)
 
+    retry_mode = "--retry-failed" in sys.argv
     RAW_DIR.mkdir(parents=True, exist_ok=True)
-    urls = load_urls()
+    if retry_mode and FAILED_FILE.exists():
+        urls = [normalize_url(u) for u in json.loads(FAILED_FILE.read_text(encoding="utf-8"))]
+        print(f"  重试模式：上次失败 {len(urls)} 页")
+        time.sleep(60)  # 等待官方限流窗口冷却
+    else:
+        urls = load_urls()
+        # --section langchain|langgraph|deepagents|concepts：只处理单分区
+        if "--section" in sys.argv:
+            idx = sys.argv.index("--section")
+            if idx + 1 < len(sys.argv):
+                sec = sys.argv[idx + 1]
+                urls = [u for u in urls if f"/oss/python/{sec}/" in u]
+                print(f"  Section 过滤: {sec} -> {len(urls)} 页")
     cache = load_cache()
-    new_cache = {}
+    new_cache = dict(cache)  # 保留旧 hash，避免重试轮把缓存截断
 
-    ok, fail, changed, skipped = 0, 0, 0, 0
+    ok, fail, changed, skipped, cached = 0, 0, 0, 0, 0
     failed_urls = []
 
     for i, url in enumerate(urls):
@@ -240,13 +298,20 @@ def sync_docs():
             out_path = DOCS_DIR / f"{name}.md"
 
         label = f"{category}/{name}" if category else name
+
+        # 重试模式：本地文件与缓存 hash 一致 → 直接跳过（不请求网络）
+        if retry_mode and out_path.exists() and cache.get(name) == hash_content(out_path.read_text(encoding="utf-8")):
+            cached += 1
+            print(f"  [{i+1}/{len(urls)}] {label}... cached-skip")
+            continue
+
         print(f"  [{i+1}/{len(urls)}] {label}...", end=" ", flush=True)
 
         content, status = fetch_mdx(raw_url)
         if content is None:
             fail += 1
-            failed_urls.append((url, status))
-            print(f"FAIL ({status})")
+            failed_urls.append([url, status])
+            print(f"FAIL ({status})", flush=True)
             continue
 
         clean = add_frontmatter(clean_mdx(content), url)
@@ -265,9 +330,17 @@ def sync_docs():
                 ok += 1
                 print(f"NEW ({len(clean)} chars)")
 
+        time.sleep(1.2)  # 限速 ~50 req/min，避免官方限流（实测 >200 次/窗口会假 404）
+
     save_cache(new_cache)
 
-    print(f"\n  Results: {ok} new | {changed} updated | {skipped} unchanged | {fail} failed")
+    # 失败清单持久化（供 --retry-failed）
+    if failed_urls:
+        FAILED_FILE.write_text(json.dumps([u for u, _ in failed_urls], ensure_ascii=False, indent=1), encoding="utf-8")
+    else:
+        FAILED_FILE.unlink(missing_ok=True)
+
+    print(f"\n  Results: {ok} new | {changed} updated | {skipped} unchanged | {cached} cached-skip | {fail} failed")
     if failed_urls:
         print(f"  Failed URLs:")
         for u, s in failed_urls:
@@ -327,26 +400,26 @@ def diff_docs():
 # 2.5 轻量检测（只对比 URL 清单，不下载）
 # ═══════════════════════════════════════════════════════
 
-LLMS_TXT_URL = "https://docs.langchain.com/llms-full.txt"
-
-
 def fetch_llms_txt() -> set[str] | None:
-    """拉取官方 llms.txt，提取所有 oss/python/ URL"""
+    """拉取官方全量 Python 语料库 llms.txt（/oss/python/llms-full.txt）
+
+    对比基准 = 官方全部 oss/python 页面（含 langchain/langgraph/deepagents/concepts/
+    contributing 内容分区 + integrations/releases/reference/migrate 等 legacy 分区），
+    与 urls.md 的「5 分区 refresh 清单 + legacy 保留段」结构一致。
+    注：根 llms-full.txt 只是产品索引（Python 语料库另有专页）。
+    """
+    import re
+    url = "https://docs.langchain.com/oss/python/llms-full.txt"
     try:
-        req = Request(LLMS_TXT_URL, headers={"User-Agent": "LangChainSkillUpdater/1.0"})
-        with urlopen(req, timeout=60) as resp:
+        req = Request(url, headers={"User-Agent": "LangChainSkillUpdater/1.0"})
+        with urlopen(req, timeout=90) as resp:
             text = resp.read().decode("utf-8")
     except Exception as e:
-        print(f"  ERROR 拉取 llms-full.txt 失败: {e}")
+        print(f"\n  ERROR 拉取 {url} 失败: {e}")
         return None
-
-    import re
-    # llms-full.txt 中 URL 格式: https://docs.langchain.com/oss/python/langchain/overview
-    # 可能带 #fragment，需要去掉
-    urls = set(re.findall(r'https://docs\.langchain\.com/oss/python/[^\s)]+', text))
-    # 去掉 # 片段，去重
-    urls = {u.split('#')[0].rstrip('/') for u in urls}
-    return urls
+    found = {normalize_url(u) for u in re.findall(r'https://docs\.langchain\.com/oss/python/[^\s)]+', text)}
+    found = {u for u in found if not any(dead in u for dead in KNOWN_DEAD)}
+    return found
 
 
 def check_llms():
@@ -355,7 +428,7 @@ def check_llms():
     print("  Check: 检测官方文档变更 (只对比 URL，不下载)")
     print("=" * 60)
 
-    print(f"\n  拉取 {LLMS_TXT_URL} ...", end=" ", flush=True)
+    print(f"\n  拉取官方全量 Python 语料库 llms-full.txt ...", end=" ", flush=True)
     live_urls = fetch_llms_txt()
     if live_urls is None:
         return None
@@ -370,15 +443,20 @@ def check_llms():
     removed_urls = current_urls - live_urls
     common = live_urls & current_urls
 
-    print(f"\n  ┌─ 当前追踪: {len(current_urls)} 个")
-    print(f"  ├─ 官方现存: {len(live_urls)} 个")
-    print(f"  ├─ 未变化:   {len(common)} 个")
-    print(f"  ├─ [NEW] 新增:  {len(new_urls)} 个")
-    print(f"  └─ [DEL] 移除:  {len(removed_urls)} 个")
+    # NEW 只报 refresh 会合并的内容分区页（langchain/langgraph/deepagents/concepts/contributing）；
+    # integrations/reference/releases 等官方全量页不在 refresh 范围，忽略避免噪音
+    content_new = {u for u in new_urls
+                   if any(f"/oss/python/{sec}/" in u for sec in LLMS_SECTIONS)}
 
-    if new_urls:
-        print(f"\n  [NEW] 需要添加到 urls.md 的新页面:")
-        for url in sorted(new_urls):
+    print(f"\n  ┌─ 当前追踪: {len(current_urls)} 个")
+    print(f"  ├─ 官方现存(全量): {len(live_urls)} 个")
+    print(f"  ├─ 未变化:   {len(common)} 个")
+    print(f"  ├─ [NEW] 内容分区新增:  {len(content_new)} 个")
+    print(f"  └─ [DEL] 官方已移除:  {len(removed_urls)} 个")
+
+    if content_new:
+        print(f"\n  [NEW] 内容分区新增页 (--refresh 会自动合并):")
+        for url in sorted(content_new):
             name = url.replace("https://docs.langchain.com/oss/python/", "")
             print(f"     {name}")
             print(f"     {url}")
@@ -389,10 +467,10 @@ def check_llms():
             name = url.replace("https://docs.langchain.com/oss/python/", "")
             print(f"     {name}")
 
-    if not new_urls and not removed_urls:
+    if not content_new and not removed_urls:
         print(f"\n  [OK] urls.md 与官方完全同步，无新增也无删除")
 
-    return {"new": len(new_urls), "removed": len(removed_urls), "total": len(live_urls)}
+    return {"new": len(content_new), "removed": len(removed_urls), "total": len(live_urls)}
 
 
 # ═══════════════════════════════════════════════════════
@@ -481,6 +559,9 @@ def main():
         check_llms()
     elif "--refresh" in args:
         refresh_urls()
+    elif "--retry-failed" in args:
+        sync_docs()
+        diff_docs()
     elif "--docs-only" in args:
         if "--no-refresh" not in args:
             refresh_urls()   # 先自动合并最新官方清单（网络失败则沿用现有）

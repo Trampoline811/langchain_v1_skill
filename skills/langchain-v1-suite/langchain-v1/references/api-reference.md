@@ -15,6 +15,7 @@
 | `HumanInTheLoopMiddleware` | 敏感操作需审批 | `interrupt_on={"tool": True \| {"allowed_decisions": ["approve","edit","reject"]}}` |
 | `ToolRetryMiddleware` | 工具调用自动重试 | `max_retries=2, retry_on=(Exception,), backoff_factor=2.0, initial_delay=1.0, max_delay=60.0, jitter=True, on_failure="return_message"` |
 | `ModelRetryMiddleware` | 模型调用自动重试 | `max_retries=2, retry_on=(Exception,), on_failure="continue"` |
+| `ToolErrorMiddleware` | 工具异常转错误 ToolMessage 回喂 LLM（需 `langchain>=1.3.14`） | `on_error(exc: Exception, request: ToolCallRequest) -> str \| None`（返回 None 则异常继续传播） |
 | `SummarizationMiddleware` | 长对话自动摘要 | `model` (必填), `trigger=("tokens", 8000) \| ("messages", 20) \| ("fraction", 0.8)`, `keep=("messages", 20)`, `token_counter`, `summary_prompt` |
 | `PIIMiddleware` | 敏感信息检测/脱敏 | `pii_type` (str), `strategy="redact" \| "block" \| "mask" \| "hash"`, `detector=None`, `apply_to_input=True`, `apply_to_output=False` |
 | `ModelFallbackMiddleware` | 模型降级链 | `*models: str \| BaseChatModel` (变长参数，fallback 链) |
