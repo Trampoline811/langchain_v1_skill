@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 2026-09-07 — 新增 L3 盲测闭环（LLM 读 skill 写代码 → 自动执行 → 判跑通）
+
+- **新增 `tests/l3-blind-test/`**：补齐"生成→执行→判定"自动化验证层（此前盲测只人工评分、生成代码不执行）。三级判定：L3a py_compile → L3b import+构造（参数自适应注入模型工厂，凭据失败降级 `FakeMessagesListChatModel` 只验 API 结构）→ L3c invoke 真跑（fake 或真实 LLM，外部凭据/网络错误判 SKIP 不判 FAIL）
+- **首轮结果（DeepSeek 生成，5 用例由简到繁）**：ON 组（system=langchain-v1 SKILL.md 全文）**20/20 静态 + 5/5 构造 PASS、0 黑名单**；OFF 组（裸写对照）**8/20 静态 + 5/5 FAIL**（系统性误用已移除的 AgentExecutor/ChatOpenAI → import 即炸）。静态差 12 分、运行 5/5 vs 0/5 → **skill 有效且真跑通可判**
+- **入口文件/盲测历史关系**：`blind_test.md`（A/B 5 用例设计）+ `blind_test_history.md`（早期 C/D/A/B 四组记录）+ `blind_test_analysis.md`（评分分析）保留；L3 = 设计方案的自动化落地（+ 新增 OFF 组真跑对照）
+- **真实环境佐证**：OFF 组 import AgentExecutor 失败证明判定跑在 langchain 1.0 真环境（非风格打分）；ON 组代码全部真实可构造
+
 ## 2026-09-07 — docs 镜像收尾：修复 .md 双后缀 bug + 中间件对账补 ToolErrorMiddleware
 
 - **根因修复**：官方 llms.txt 分区链接自带 `.md` 后缀，旧 `url_to_raw()` 二次追加 → 请求 `.md.md` 必 404（此前误判为"官方限流假 404"）。新增 `normalize_url()` 统一去尾 `.md`，`load_urls`/`refresh_urls`/`--retry-failed` 三处规范化

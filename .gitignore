@@ -2,6 +2,8 @@ docs/
 .venv/
 __pycache__/
 *.pyc
+tests/**/__pycache__/
+tests/**/.tmp_judge/
 .docs_cache.json
 langchain_docs/
 .DS_Store
