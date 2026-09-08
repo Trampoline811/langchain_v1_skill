@@ -22,17 +22,26 @@
 > 判定组合：`L3a 通过 → 可运行候选`；`L3a+L3b → 结构正确`；`L3a+L3b+L3c → 真跑通`。
 > 生成代码的**静态评分**沿用 blind_test.md 规则（每例 0-4 分，看 API 使用正误）。
 
-## 五个用例（由简到繁）
+> **L3c 判定语义**：真实凭据可用时才真跑；模型工厂凭据失败（如 provider 无 key）→ 降级
+> `FakeMessagesListChatModel` 只验 API 结构（此时 L3b 构造成功即判 PASS，不追 L3c）；
+> fake model 能力不足以驱动真跑（如对 agent 图抛 `NotImplementedError`）→ 判 **SKIP 不判 FAIL**
+> （属判定 harness 限制，非生成代码错误）。外部模型/网络不可达同样 SKIP。
 
-与 `tests/blind_test.md` 同源（prompt 见 `cases.py`）：
+## 七个用例（由简到繁，跨 3 个子技能）
 
-| 用例 | 主题 | 覆盖 API |
-|------|------|---------|
-| 1 | 天气查询 Agent | `create_agent` / `init_chat_model` / `@tool` / `agent.invoke` |
-| 2 | 客服 Bot 多轮记忆 | `checkpointer=InMemorySaver` + `thread_id` / `state_schema` 扩展 |
-| 3 | 简历解析结构化输出 | `response_format=Pydantic` / `result["structured_response"]` |
-| 4 | send_email 审批 + 失败重试 | `HumanInTheLoopMiddleware` / `ToolRetryMiddleware` + checkpointer |
-| 5 | Manager 分发多智能体 | `SubAgentMiddleware` / `agent.as_tool()` 嵌套 |
+与 `tests/blind_test.md` 同源（prompt 见 `cases.py`）。每个用例的 `skill` 字段决定
+**ON 组注入哪个子技能**作为系统提示（langchain-v1 / deepagents-v1 / langgraph-v1），
+OFF 组一律裸写对照——扩展后不只验证 langchain-v1，还覆盖 deepagents / langgraph 两个子技能：
+
+| 用例 | 主题 | 注入技能 | 覆盖 API |
+|------|------|---------|---------|
+| 1 | 天气查询 Agent | langchain-v1 | `create_agent` / `init_chat_model` / `@tool` / `agent.invoke` |
+| 2 | 客服 Bot 多轮记忆 | langchain-v1 | `checkpointer=InMemorySaver` + `thread_id` / `state_schema` 扩展 |
+| 3 | 简历解析结构化输出 | langchain-v1 | `response_format=Pydantic` / `result["structured_response"]` |
+| 4 | send_email 审批 + 失败重试 | langchain-v1 | `HumanInTheLoopMiddleware` / `ToolRetryMiddleware` + checkpointer |
+| 5 | Manager 分发多智能体 | langchain-v1 | `SubAgentMiddleware` / `agent.as_tool()` 嵌套 |
+| 6 | 深度研究规划 Agent | deepagents-v1 | `create_deep_agent` / `@tool` / `response_format`（Pydantic 结构化计划） |
+| 7 | 持久化记忆问答图 | langgraph-v1 | `StateGraph` / `Annotated` reducer / `compile(checkpointer=InMemorySaver())` |
 
 ## 执行方式
 
@@ -55,14 +64,14 @@ python tests/l3-blind-test/run.py --group on --max-level b
 输出：
 - `generated/on/case1_weather.py` … 生成代码落盘（可人工复查）
 - `report_<组>_<时间戳>.md` 评分 + 三级判定表
-- 评分规则：静态分 0-4/例（见 blind_test.md），汇总 0-20
+- 评分规则：静态分 0-4/例（见 blind_test.md），汇总 `4×N` 分动态计算（7 例满分 28）
 
-## 成功标准（沿用 blind_test.md）
+## 成功标准（沿用 blind_test.md，N=用例数动态）
 
-- ON 组均分 > 15/20 → skill 有效
-- ON − OFF ≥ 5 分 → skill 有明显提升
+- ON 组每例均分 ≥ 3/4（满 `4×N`）→ skill 有效
+- ON − OFF 每例均值 ≥ 1.0 分 → skill 有明显提升
 - 0 处黑名单 API（ON 组）
-- L3c 跑通率 ON ≥ OFF（真跑通是最终裁判）
+- PASS/SKIP 率 ON ≥ OFF（真跑通是最终裁判；SKIP 不计 FAIL）
 
 ## 与 docs/ 镜像的关系
 

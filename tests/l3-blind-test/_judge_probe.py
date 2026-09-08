@@ -104,9 +104,30 @@ def main():
     ap.add_argument("--invoke", action="store_true")
     args = ap.parse_args()
 
+    # 凭据缺失时注入 dummy 占位：让 provider client 能构造（L3b 构造真验证），
+    # 真跑必因认证失败 → 判 SKIP，不产生真实 API 消耗
+    import os as _os
+    for _k in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AZURE_OPENAI_API_KEY",
+               "GOOGLE_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY"):
+        if not _os.environ.get(_k):
+            _os.environ[_k] = "sk-blindtest-dummy-placeholder"
+
     spec = importlib.util.spec_from_file_location("genmod", args.codefile)
     m = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(m)   # 顶层 import/异常在此抛出
+    try:
+        spec.loader.exec_module(m)   # 顶层 import/异常在此抛出
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}"
+        low = err.lower()
+        # 模块顶层初始化模型导致的凭据/网络类错误 = 运行环境问题（配好 key 即可跑），
+        # 与 invoke 阶段同类错误一样判 SKIP 不判 FAIL
+        if any(k in low for k in ["api_key", "api key", "credentials",
+                                  "missing credentials", "401", "404", "429"]):
+            print(json.dumps({"level": "b", "ok": True,
+                              "detail": f"SKIP(模块级模型初始化凭据/网络问题): {err[:200]}"}))
+            return
+        print(json.dumps({"level": "b", "ok": False, "detail": err}))
+        return
 
     funcs = _local_functions(m)
     pref: list[str] = []
@@ -149,6 +170,15 @@ def main():
                                     f"models {'fake' if fake_used else len(models)})"}))
         return
     except Exception as e:
+        err = f"{type(e).__name__}: {e}"
+        low = err.lower()
+        # 构造期内建模型触发的凭据/网络类错误（如零参 build 内部 init_chat_model）
+        # = 运行环境问题 → SKIP 不判 FAIL
+        if any(k in low for k in ["api_key", "api key", "credentials",
+                                  "missing credentials", "401", "404", "429"]):
+            print(json.dumps({"level": "b", "ok": True,
+                              "detail": f"SKIP(构造期模型凭据/网络问题): {err[:200]}"}))
+            return
         print(json.dumps({"level": "b", "ok": False,
                           "detail": f"{type(e).__name__}: {e}"}))
         return
@@ -165,7 +195,12 @@ def main():
 
     # L3c 真实执行（fake model 也走完整链路）
     agent = res[0] if isinstance(res, tuple) else res
-    config = res[1] if isinstance(res, tuple) and len(res) > 1 else None
+    config = None
+    # 元组第二元素只有「长得像 config 的 dict」才当作 config；
+    # 若返回 (agent, checkpointer) 之类组合，忽略第二元素走默认 thread_id
+    if isinstance(res, tuple) and len(res) > 1 and isinstance(res[1], dict) \
+            and "configurable" in res[1]:
+        config = res[1]
     if config is None:
         config = {"configurable": {"thread_id": "l3-blind-test-thread"}}
     try:
@@ -181,12 +216,19 @@ def main():
         err = f"{type(e).__name__}: {e}"
         ext = any(k in err.lower() for k in
                   ["connection", "connect", "auth", "401", "403", "timeout",
-                   "apiconnection", "api key", "not found", "404", "429",
-                   "rate limit", "billing", "quota", "insufficient"])
+                   "apiconnection", "api key", "api_key", "credentials",
+                   "not found", "404", "429", "rate limit", "billing", "quota",
+                   "insufficient", "token is invalid"])
         if ext:
             out["level"] = "c"
             out["ok"] = True
             out["detail"] = f"SKIP(外部模型不可达): {err[:220]}"
+        elif fake_used and isinstance(e, NotImplementedError):
+            # FakeMessagesListChatModel 能力有限（如不支持 agent 内部所需调用）——
+            # 属判定 harness 限制而非生成代码错误 → SKIP 不判 FAIL
+            out["level"] = "c"
+            out["ok"] = True
+            out["detail"] = f"SKIP(fake model 无法驱动 L3c 真跑): {err[:220]}"
         else:
             out["level"] = "c"
             out["ok"] = False

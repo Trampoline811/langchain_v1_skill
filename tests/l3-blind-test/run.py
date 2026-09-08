@@ -27,7 +27,11 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parents[2]      # 项目根
 L3DIR = pathlib.Path(__file__).resolve().parent
 CASES = L3DIR / "cases.py"
-SKILL_LC = ROOT / "skills" / "langchain-v1-suite" / "langchain-v1" / "SKILL.md"
+SKILL_MAP = {
+    "langchain-v1": ROOT / "skills" / "langchain-v1-suite" / "langchain-v1" / "SKILL.md",
+    "deepagents-v1": ROOT / "skills" / "langchain-v1-suite" / "deepagents-v1" / "SKILL.md",
+    "langgraph-v1": ROOT / "skills" / "langchain-v1-suite" / "langgraph-v1" / "SKILL.md",
+}
 VENV_PY = ROOT / ".venv" / "Scripts" / "python.exe"
 GEN_DIR = L3DIR / "generated"
 REPORT_DIR = L3DIR / "reports"
@@ -44,23 +48,29 @@ def load_cases():
     return mod.CASES
 
 
-def build_system(group: str) -> str:
+def build_system(group: str, skill: str = "langchain-v1") -> str:
     if group == "off":
         return "You are an expert Python developer. Write clean, runnable Python code."
-    skill = SKILL_LC.read_text(encoding="utf-8")
+    skill_file = SKILL_MAP.get(skill, SKILL_MAP["langchain-v1"])
+    text = skill_file.read_text(encoding="utf-8")
     # 截断保护：skill 全文可能很长，取前 ~30k 字符避免超上下文（保留 API 速查主体）
-    if len(skill) > 30000:
-        skill = skill[:30000] + "\n...(截断)"
+    if len(text) > 30000:
+        text = text[:30000] + "\n...(截断)"
     return (
-        "You are an expert Python developer. You MUST follow the LangChain v1.0 "
-        "coding rules below exactly — never use the blacklisted v0.x APIs.\n\n"
-        "===== LANGCHAIN V1.0 SKILL (authoritative rules) =====\n" + skill
+        f"You are an expert Python developer. You MUST follow the {skill} coding "
+        "rules below exactly — never use the blacklisted v0.x APIs.\n\n"
+        "===== CODING RULES (authoritative) =====\n" + text
     )
 
 
 def gen_code(client, system: str, case: dict, model: str) -> str:
     """调 LLM 生成用例代码，返回纯 Python 源码"""
-    user = case["prompt"] + "\n\n只输出一个完整 Python 文件（含 import 与 __main__ 入口），不要解释。"
+    user = case["prompt"] + (
+        "\n\n只输出一个完整 Python 文件（含 import 与 __main__ 入口），不要解释。"
+        "\n硬性要求：1) 禁止在函数/类之外初始化或连接任何模型（import 语句本身除外，"
+        "模型只能在函数内创建）；2) import 只能引用真实存在、可用的模块；"
+        "3) 输出必须完整、语法正确，禁止中途截断。"
+    )
     resp = client.chat.completions.create(
         model=model,
         messages=[{"role": "system", "content": system},
@@ -84,7 +94,8 @@ def run_level(code: str, build_fn: str | None, case_name: str,
     try:
         # L3a 语法
         r = subprocess.run([str(VENV_PY), "-m", "py_compile", str(f)],
-                           capture_output=True, text=True, timeout=60)
+                           capture_output=True, encoding="utf-8", errors="replace",
+                           timeout=60)
         if r.returncode != 0:
             return {"level": "a", "ok": False,
                     "detail": r.stderr.strip().splitlines()[-1] if r.stderr.strip() else "syntax error"}
@@ -96,8 +107,8 @@ def run_level(code: str, build_fn: str | None, case_name: str,
         has_key = bool(os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY"))
         if max_level == "c" and has_key:
             cmd += ["--invoke"]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=180,
-                           cwd=str(ROOT))
+        r = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace",
+                           timeout=180, cwd=str(ROOT))
         if r.returncode != 0:
             # 顶层 import 失败（含缺依赖 ModuleNotFoundError）→ 归为 b 级 FAIL
             tail = (r.stderr or r.stdout).strip()
@@ -152,14 +163,18 @@ def main():
         from openai import OpenAI
         client = OpenAI(base_url="https://api.deepseek.com/v1", api_key=key)
 
-    system = build_system(args.group)
+    sys_cache: dict[str, str] = {}
 
     rows = []
     for case in cases:
         cid = case["id"]
+        skill = case.get("skill", "langchain-v1")
+        if skill not in sys_cache:
+            sys_cache[skill] = build_system(args.group, skill)
+        system = sys_cache[skill]
         fname = f"case{cid}_{case['name']}.py"
         fpath = group_dir / fname
-        print(f"\n===== 用例 {cid}: {case['name']} ({args.group} 组) =====")
+        print(f"\n===== 用例 {cid}: {case['name']} ({args.group} 组, skill={skill}) =====")
 
         if args.no_llm:
             if not fpath.exists():
@@ -175,29 +190,43 @@ def main():
             time.sleep(1)  # 避免限流
 
         score, hits = static_score(code, case)
-        # 判定（max-level 控制最深跑哪级）
-        if args.max_level == "a":
-            judge, detail = "L3a-PASS", "语法通过"
-        else:
+        # 判定（max-level 控制最深跑哪级；FAIL@a 且可再生成 → 自动重试最多 2 次，
+        # 自愈 LLM 长文件截断/笔误类语法噪声）
+        attempts = 0
+        while True:
+            if args.max_level == "a":
+                judge, detail = "L3a-PASS", "语法通过"
+                break
             res = run_level(code, case.get("build_fn"), case["name"],
                             max_level=args.max_level)
             judge = "PASS" if res["ok"] else f"FAIL@{res['level']}"
             detail = res["detail"]
+            if (not args.no_llm and res["ok"] is False
+                    and res.get("level") == "a" and attempts < 2):
+                attempts += 1
+                print(f"  L3a 语法失败 -> 重新生成 (第 {attempts}/2 次)…")
+                code = gen_code(client, system, case, args.model)
+                fpath.write_text(code, encoding="utf-8")
+                time.sleep(1)
+                continue
+            break
 
         print(f"  静态分: {score}/4  | 黑名单命中: {hits if hits else '无'}")
         print(f"  判定: {judge}  {detail[:200]}")
-        rows.append({"case": cid, "name": case["name"], "code": code,
+        rows.append({"case": cid, "name": case["name"], "skill": skill, "code": code,
                      "score": score, "hits": hits, "judge": judge, "detail": detail})
 
     # 报告
     ts = time.strftime("%Y%m%d_%H%M")
     rep = REPORT_DIR / f"report_{args.group}_{ts}.md"
     lines = [f"# L3 盲测报告 — {args.group} 组（{ts}）", ""]
-    total = sum(r["score"] for r in rows if r["score"] is not None)
-    lines += [f"总分: {total}/20（每例 4 分 × {len([r for r in rows if r['score'] is not None])} 例）", ""]
-    lines += ["| 用例 | 静态分 | 黑名单 | 判定 | 说明 |", "|---|---|---|---|---|"]
+    scored = [r for r in rows if r["score"] is not None]
+    total = sum(r["score"] for r in scored)
+    lines += [f"总分: {total}/{4*len(scored)}（每例 4 分 × {len(scored)} 例）", ""]
+    lines += ["| 用例 | 技能 | 静态分 | 黑名单 | 判定 | 说明 |", "|---|---|---|---|---|---|"]
     for r in rows:
-        lines.append(f"| {r['case']} {r['name']} | {r['score'] if r['score'] is not None else '-'}/4 "
+        lines.append(f"| {r['case']} {r['name']} | {r['skill']} "
+                     f"| {r['score'] if r['score'] is not None else '-'}/4 "
                      f"| {', '.join(r['hits']) if r['hits'] else '无'} | {r['judge']} | {str(r['detail'])[:80]} |")
     lines += ["", "## 生成代码", ""]
     for r in rows:

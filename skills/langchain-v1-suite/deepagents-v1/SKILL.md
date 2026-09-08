@@ -113,6 +113,10 @@ result = agent.invoke(
 
 ### 国内模型配置（硅基流动直连）
 
+> ⚠️ **模型初始化约定**：默认用 `init_chat_model(...)`，或直接传模型名字符串给
+> `create_deep_agent(model="deepseek-chat")` / `create_deep_agent(model="openai:gpt-4o")`；
+> 下方 `ChatOpenAI`+`base_url` 仅用于**接入自定义供应商**场景，不要把它当默认模型构造方式。
+
 无需代理，兼容 OpenAI 接口，永久免费模型可用：
 
 ```python

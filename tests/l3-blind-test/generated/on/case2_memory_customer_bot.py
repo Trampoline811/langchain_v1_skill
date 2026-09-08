@@ -1,3 +1,7 @@
+import os
+from typing import Optional
+
+from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain.tools import tool, ToolRuntime
@@ -6,78 +10,101 @@ from langgraph.store.memory import InMemoryStore
 from langchain_core.utils.uuid import uuid7
 
 
+# ---------------------------------------------------------------------------
+# 工具定义（模块级，仅定义不初始化模型）
+# ---------------------------------------------------------------------------
 @tool
-def remember_preference(key: str, value: str, runtime: ToolRuntime) -> str:
-    """Remember a user preference. Use when the user tells you their name, or any preference (e.g., language, tone, topic)."""
-    runtime.store.put(("user_prefs",), runtime.context.user_id, {key: value})
+def remember_user_preference(
+    key: str, value: str, runtime: ToolRuntime
+) -> str:
+    """Store a user preference (e.g. name, favorite color, language).
+    Use this whenever the user shares a personal detail you should remember."""
+    namespace = ("user_prefs",)
+    user_id = runtime.context.user_id
+    prefs = runtime.store.get(namespace, user_id)
+    if prefs is None:
+        prefs = {}
+    prefs[key] = value
+    runtime.store.put(namespace, user_id, prefs)
     return f"Saved preference: {key} = {value}"
 
 
 @tool
 def get_user_preferences(runtime: ToolRuntime) -> str:
-    """Get all saved preferences for the current user. Use when you need to recall the user's name or preferences."""
-    prefs = runtime.store.get(("user_prefs",), runtime.context.user_id)
-    if prefs and prefs.value:
-        return str(prefs.value)
-    return "No preferences saved yet."
+    """Retrieve all stored preferences for the current user."""
+    namespace = ("user_prefs",)
+    user_id = runtime.context.user_id
+    prefs = runtime.store.get(namespace, user_id)
+    if prefs is None:
+        return "No preferences stored yet."
+    return ", ".join(f"{k}={v}" for k, v in prefs.items())
 
 
+# ---------------------------------------------------------------------------
+# 模型初始化（独立函数）
+# ---------------------------------------------------------------------------
 def init_model():
-    """Initialize the chat model."""
-    return init_chat_model("openai:gpt-4o", temperature=0.3)
+    """Initialize and return the chat model."""
+    load_dotenv()
+    model_name = os.getenv("MODEL_NAME", "openai:gpt-4o-mini")
+    return init_chat_model(model_name, temperature=0.3)
 
 
-def build_agent(model):
-    """Build the customer service agent with memory."""
+# ---------------------------------------------------------------------------
+# Agent 构建（独立函数）
+# ---------------------------------------------------------------------------
+def build_agent():
+    """Build and return the customer-service agent."""
+    model = init_model()
     checkpointer = InMemorySaver()
     store = InMemoryStore()
 
+    system_prompt = (
+        "You are a friendly customer-service assistant. "
+        "Use the provided tools to remember and retrieve user preferences. "
+        "When the user tells you their name or any preference, save it. "
+        "Always greet returning users by name and reference their saved preferences."
+    )
+
     agent = create_agent(
         model=model,
-        tools=[remember_preference, get_user_preferences],
-        system_prompt=(
-            "You are a helpful customer service bot. "
-            "You remember user details (like their name and preferences) across the conversation. "
-            "When the user tells you their name or a preference, use the remember_preference tool to save it. "
-            "When you need to recall their details, use the get_user_preferences tool. "
-            "Always address the user by their name if you know it."
-        ),
+        tools=[remember_user_preference, get_user_preferences],
+        system_prompt=system_prompt,
         checkpointer=checkpointer,
         store=store,
     )
     return agent
 
 
-def main():
-    model = init_model()
-    agent = build_agent(model)
+# ---------------------------------------------------------------------------
+# 主入口
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    agent = build_agent()
+    thread_id = str(uuid7())
+    config = {"configurable": {"thread_id": thread_id, "user_id": "alice"}}
 
-    # Create a unique thread for this conversation
-    config = {"configurable": {"thread_id": str(uuid7())}}
-
-    # First interaction: user provides their name
+    # 第一轮：用户告知姓名与偏好
     result1 = agent.invoke(
-        {"messages": [{"role": "user", "content": "Hi! My name is Alice."}]},
+        {"messages": [{"role": "user", "content": "Hi, my name is Alice and I prefer tea over coffee."}]},
         config=config,
     )
     print("Bot:", result1["messages"][-1].content)
-    print("---")
+    print("-" * 60)
 
-    # Second interaction: user provides a preference
+    # 第二轮：同一会话，测试短期记忆
     result2 = agent.invoke(
-        {"messages": [{"role": "user", "content": "I prefer concise answers."}]},
+        {"messages": [{"role": "user", "content": "What is my name?"}]},
         config=config,
     )
     print("Bot:", result2["messages"][-1].content)
-    print("---")
+    print("-" * 60)
 
-    # Third interaction: test if the bot remembers
+    # 第三轮：新会话（同一 user_id），测试长期记忆
+    new_thread = str(uuid7())
+    new_config = {"configurable": {"thread_id": new_thread, "user_id": "alice"}}
     result3 = agent.invoke(
-        {"messages": [{"role": "user", "content": "What's my name and what do I prefer?"}]},
-        config=config,
+        {"messages": [{"role": "user", "content": "Do you remember my drink preference?"}]},
+        config=new_config,
     )
     print("Bot:", result3["messages"][-1].content)
-
-
-if __name__ == "__main__":
-    main()

@@ -1,5 +1,9 @@
 # deepagents-v1 更新日志
 
+## 2026-09-08 — 补模型初始化约定（L3 盲测反哺）
+
+- **补充** §2.1 模型初始化约定：默认 `init_chat_model(...)`/字符串传 `create_deep_agent(model=...)`，`ChatOpenAI`+`base_url` 仅限自定义供应商接入——源：L3 盲测 case6 生成代码模仿国内供应商示例误用 ChatOpenAI（-1 分）
+
 ## 2026-09-07 — §2.8 动态子 Agent 补官方六模式 + RLM
 
 - **补充** §2.8：官方 dynamic-subagents 页六种编排模式速查表（Classify-and-act / Fan-out-and-synthesize / Adversarial verification / Generate-and-filter / Tournament / Loop-until-done）+ 递归语言模型（RLM）工作流说明 + `task()` 不经 tool-calling 路径（隔离/审批边界一致）注记

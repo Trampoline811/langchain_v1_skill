@@ -25,6 +25,7 @@ LangGraph   ← Agent Runtime（durable execution / streaming / HITL / persisten
 ```
 
 **LangGraph 不依赖 LangChain** — 可以不装 `langchain` 直接用 `langgraph` 构建纯数据处理图。反过来，**LangChain 依赖 LangGraph** — `create_agent()` 底层由 StateGraph 驱动。
+> ⚠️ **模型初始化**：统一用 `init_chat_model('openai:gpt-4o')`（或 `'deepseek-chat'` 等）或由调用方注入模型实例；**禁止直接用 `ChatOpenAI(...)` / `ChatAnthropic(...)` 等 provider 构造**（仅接入自定义 `base_url` 的国内供应商时才用 `ChatOpenAI`+`base_url`）。
 > 💡 不确定用哪个？→ 回到父技能 `skills/langchain-v1-suite/SKILL.md` 查路由决策表
 
 ---

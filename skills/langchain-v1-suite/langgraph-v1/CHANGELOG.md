@@ -1,5 +1,9 @@
 # langgraph-v1 更新日志
 
+## 2026-09-08 — 补模型初始化约定（L3 盲测反哺）
+
+- **补充** 顶部模型初始化警告：统一 `init_chat_model(...)`/调用方注入模型实例，**禁止直接 `ChatOpenAI`/`ChatAnthropic` 构造**（自定义 base_url 国内供应商除外）——源：L3 盲测 case7 生成代码残留 ChatOpenAI（-1 分），子技能此前通篇无此禁令
+
 ## 2026-09-07 — 新增 §8.1 官方错误码速查
 
 - **新增** §8.1 错误码速查：6 个官方运行时错误（GRAPH_RECURSION_LIMIT / MISSING_CHECKPOINTER / INVALID_CHAT_HISTORY / INVALID_CONCURRENT_GRAPH_UPDATE / INVALID_GRAPH_NODE_RETURN_VALUE / MULTIPLE_SUBGRAPHS）原因 + 修复表

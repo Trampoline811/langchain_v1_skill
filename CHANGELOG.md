@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 2026-09-08 — L3 盲测扩展：覆盖 deepagents / langgraph 子技能 + 判定语义硬化
+
+- **L3 用例 5 → 7**：`cases.py` 每例新增 `skill` 字段，ON 组按用例注入对应子技能（langchain-v1 / deepagents-v1 / langgraph-v1）SKILL.md 为系统提示；新增 case6 深度研究规划 Agent（`create_deep_agent` + `@tool` + `response_format`）、case7 持久化记忆问答图（`StateGraph` + `Annotated` reducer + `compile(checkpointer=InMemorySaver())`）
+- **判定语义硬化**（`_judge_probe.py`，四连修）：① fake model 驱动 L3c 受限（`NotImplementedError`）→ **SKIP 不判 FAIL**；② 凭据/网络类错误统一 SKIP——补全 **import 期**与**构造期**两处漏网（此前只覆盖 invoke 期），关键词含 api_key/credentials/401 等；③ 构造返回元组 `(agent, checkpointer)` 被误当 `(agent, config)` → 仅当第二元素为含 `configurable` 的 dict 才作 config（修复 HITL 用例误报 `'InMemorySaver' has no attribute 'items'`）；④ **dummy key 注入**：导入前为缺失 provider key 填占位 → L3b 构造 100% 真实验证（不再因缺凭据跳过），L3c 真跑必 401 → SKIP，零真实消耗
+- **run.py 增强**：子进程捕获显式 `encoding="utf-8"`（原 GBK 解码 UTF-8 崩溃）；总分 `4×N` 动态化（原硬编码 /20）；报告加技能列；**语法失败自动重试生成**（最多 2 次，自愈长文件截断类噪声）；生成 prompt 加 3 条硬约束（模型只在函数内创建 / import 只引真实模块 / 禁止截断）
+- **终版结果（D 语料，7 用例 × 2 组，2026-09-08 20:49/20:50）**：ON **27/28 静态 + 7/7 PASS**（构造全验证，L3c 凭据 SKIP；case1-5 零黑名单）；OFF **16/28 + 6/7 FAIL@b**（v0 API import 即炸）+ case7 PASS(SKIP)。静态差 11 分、可运行 7/7 vs 1/7 → **三子技能均有效**；多轮样本（A/B/C/D）方差分析：生成偶发语法截断/顶层初始化，重试+硬约束后收敛
+- **盲测反哺 skill 两处微缺口**：langgraph-v1 SKILL 通篇无"禁 ChatOpenAI"约定（全量注入仍被违例）→ 补模型初始化警告行；deepagents-v1 的 ChatOpenAI 国内供应商示例易被误模仿 → 补"默认 init_chat_model/字符串传参，ChatOpenAI 仅自定义 base_url 场景"约定。修复后 ON 未来可望 28/28
+- **已知边界**：case7（langgraph StateGraph）OFF 组也能构造通过——StateGraph API 跨 v0/v1 稳定，该用例判别力天然弱（对照意义小于 langchain/deepagents 用例），已记录
+
 ## 2026-09-07 — 新增 L3 盲测闭环（LLM 读 skill 写代码 → 自动执行 → 判跑通）
 
 - **新增 `tests/l3-blind-test/`**：补齐"生成→执行→判定"自动化验证层（此前盲测只人工评分、生成代码不执行）。三级判定：L3a py_compile → L3b import+构造（参数自适应注入模型工厂，凭据失败降级 `FakeMessagesListChatModel` 只验 API 结构）→ L3c invoke 真跑（fake 或真实 LLM，外部凭据/网络错误判 SKIP 不判 FAIL）

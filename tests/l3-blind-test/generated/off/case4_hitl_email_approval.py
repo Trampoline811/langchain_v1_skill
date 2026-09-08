@@ -1,186 +1,151 @@
 import json
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain.agents.output_parsers.openai_tools import OpenAIToolsAgentOutputParser
-from langchain_core.agents import AgentAction, AgentFinish
-from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool, tool
-from langchain_core.utils.function_calling import convert_to_openai_tool
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-# ========== 工具定义 ==========
 
+# ---------- 工具定义 ----------
 class SendEmailInput(BaseModel):
     recipient: str = Field(description="收件人邮箱地址")
     subject: str = Field(description="邮件主题")
-    body: str = Field(description="邮件正文")
+    body: str = Field(description="邮件正文内容")
+
 
 @tool("send_email", args_schema=SendEmailInput)
 def send_email(recipient: str, subject: str, body: str) -> str:
-    """发送一封邮件（需要人工审批）"""
-    # 模拟邮件发送，可能失败
-    import random
-    if random.random() < 0.3:
-        raise ConnectionError("邮件服务器连接失败")
-    return f"邮件已发送至 {recipient}，主题：{subject}"
+    """发送一封邮件。需要人工审批后才能执行。"""
+    # 模拟邮件发送，实际场景中可替换为真实邮件服务
+    print(f"\n[邮件已发送] 收件人: {recipient}\n主题: {subject}\n正文: {body}")
+    return f"邮件已成功发送至 {recipient}"
 
-# ========== 审批回调 ==========
 
-class ApprovalCallbackHandler(BaseCallbackHandler):
-    """在工具调用前进行人工审批，并自动重试失败的工具调用"""
-    
-    def __init__(self, max_retries: int = 3):
-        self.max_retries = max_retries
-        self.approval_func: Optional[Callable[[Dict[str, Any]], bool]] = None
-        self.retry_counts: Dict[str, int] = {}
-    
-    def set_approval_func(self, func: Callable[[Dict[str, Any]], bool]):
-        """设置审批函数，接收工具调用信息，返回是否批准"""
-        self.approval_func = func
-    
-    def on_tool_start(
-        self,
-        serialized: Dict[str, Any],
-        input_str: str,
-        *,
-        run_id: Any = None,
-        parent_run_id: Any = None,
-        tags: Optional[List[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs: Any,
-    ) -> None:
-        """工具开始前调用，用于审批"""
-        tool_name = serialized.get("name", "unknown_tool")
-        if tool_name == "send_email" and self.approval_func:
-            # 解析输入
+# ---------- 人工审批包装器 ----------
+class HumanApprovalTool(BaseTool):
+    """包装任意工具，在执行前请求人工审批。"""
+    name: str = "human_approval_tool"
+    description: str = "需要人工审批的工具包装器"
+    wrapped_tool: BaseTool = None
+    max_retries: int = 3
+
+    def _run(self, *args: Any, **kwargs: Any) -> str:
+        """执行工具，带人工审批和自动重试。"""
+        for attempt in range(1, self.max_retries + 1):
+            # 1. 请求人工审批
+            print(f"\n--- 人工审批请求 (尝试 {attempt}/{self.max_retries}) ---")
+            print(f"工具: {self.wrapped_tool.name}")
+            print(f"参数: {json.dumps(kwargs, ensure_ascii=False, indent=2)}")
+            approval = input("是否批准执行此工具调用? (y/n): ").strip().lower()
+
+            if approval not in ("y", "yes"):
+                print("❌ 人工拒绝执行工具调用")
+                return "工具调用被人工拒绝"
+
+            # 2. 执行工具
+            print(f"✅ 人工批准，正在执行工具...")
             try:
-                tool_input = json.loads(input_str) if input_str else {}
-            except:
-                tool_input = {}
-            
-            approval_info = {
-                "tool": tool_name,
-                "input": tool_input,
-                "run_id": str(run_id) if run_id else None
-            }
-            
-            if not self.approval_func(approval_info):
-                raise PermissionError(f"用户拒绝了 {tool_name} 工具调用")
-    
-    def on_tool_error(
-        self,
-        error: Union[Exception, KeyboardInterrupt],
-        *,
-        run_id: Any = None,
-        parent_run_id: Any = None,
-        tags: Optional[List[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs: Any,
-    ) -> None:
-        """工具出错时调用，用于自动重试"""
-        run_id_str = str(run_id) if run_id else "unknown"
-        current_retries = self.retry_counts.get(run_id_str, 0)
-        
-        if current_retries < self.max_retries:
-            self.retry_counts[run_id_str] = current_retries + 1
-            # 这里不能直接重试，需要抛出特殊异常让 Agent 重试
-            # 实际上 LangChain 的 AgentExecutor 会处理重试逻辑
-            # 我们通过修改错误信息来提示重试
-            error.args = (f"{error.args[0]} (自动重试 {current_retries + 1}/{self.max_retries})",)
-        else:
-            self.retry_counts.pop(run_id_str, None)
+                result = self.wrapped_tool.run(*args, **kwargs)
+                print(f"工具执行成功: {result}")
+                return result
+            except Exception as e:
+                print(f"⚠️ 工具执行失败 (尝试 {attempt}/{self.max_retries}): {e}")
+                if attempt < self.max_retries:
+                    print("准备自动重试...")
+                else:
+                    print("已达到最大重试次数，放弃执行")
+                    return f"工具执行失败，已重试 {self.max_retries} 次: {str(e)}"
 
-# ========== 模型初始化 ==========
+        return "工具执行失败"
 
-def init_model() -> ChatOpenAI:
-    """初始化语言模型"""
-    # 注意：实际使用时需要设置 OPENAI_API_KEY 环境变量
+    async def _arun(self, *args: Any, **kwargs: Any) -> str:
+        """异步执行工具（简单同步实现）"""
+        return self._run(*args, **kwargs)
+
+
+# ---------- 模型初始化 ----------
+def initialize_model() -> ChatOpenAI:
+    """初始化语言模型。"""
+    # 注意：请设置环境变量 OPENAI_API_KEY，或在此处直接传入
     return ChatOpenAI(
         model="gpt-4o-mini",
         temperature=0,
-        max_retries=2,  # 模型自身的重试
+        api_key="your-api-key-here",  # 替换为实际 API key
     )
 
-# ========== Agent 构建 ==========
 
-def build_agent(
-    model: ChatOpenAI,
-    tools: List[BaseTool],
-    approval_callback: ApprovalCallbackHandler
-) -> AgentExecutor:
-    """构建带审批和重试机制的 Agent"""
-    
-    # 创建带审批的 Agent
-    prompt = SystemMessage(content=(
-        "你是一个智能助手，可以调用工具完成任务。"
-        "当需要发送邮件时，必须使用 send_email 工具。"
-        "如果工具调用失败，请重试。"
-    ))
-    
-    # 使用标准方式创建 agent
-    from langchain.agents import create_tool_calling_agent
-    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-    
-    prompt_template = ChatPromptTemplate.from_messages([
-        ("system", "你是一个智能助手，可以调用工具完成任务。当需要发送邮件时，必须使用 send_email 工具。如果工具调用失败，请重试。"),
+# ---------- Agent 构建 ----------
+def build_agent(model: ChatOpenAI) -> AgentExecutor:
+    """构建带人工审批和自动重试的 Agent。"""
+    # 创建带人工审批的邮件工具
+    email_tool = HumanApprovalTool(
+        wrapped_tool=send_email,
+        name="send_email_with_approval",
+        description="发送邮件（需要人工审批，失败自动重试最多3次）"
+    )
+
+    # 其他普通工具（示例）
+    @tool
+    def get_current_time() -> str:
+        """获取当前时间。"""
+        from datetime import datetime
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    tools = [email_tool, get_current_time]
+
+    # 创建提示模板
+    prompt = ChatPromptTemplate.from_messages([
+        SystemMessage(content="你是一个有用的助手。当需要发送邮件时，必须使用 send_email_with_approval 工具。"),
         MessagesPlaceholder(variable_name="chat_history"),
-        ("human", "{input}"),
+        HumanMessage(content="{input}"),
         MessagesPlaceholder(variable_name="agent_scratchpad"),
     ])
-    
-    agent = create_tool_calling_agent(model, tools, prompt_template)
-    
-    # 创建执行器，并添加审批回调
+
+    # 创建 Agent
+    agent = create_tool_calling_agent(model, tools, prompt)
+
+    # 创建执行器
     executor = AgentExecutor(
         agent=agent,
         tools=tools,
         verbose=True,
         handle_parsing_errors=True,
-        max_iterations=10,  # 防止无限循环
-        callbacks=[approval_callback],
+        max_iterations=5,
     )
-    
+
     return executor
 
-# ========== 审批函数示例 ==========
 
-def default_approval_func(tool_call_info: Dict[str, Any]) -> bool:
-    """默认审批函数：打印信息并询问用户"""
-    print("\n=== 工具审批请求 ===")
-    print(f"工具: {tool_call_info['tool']}")
-    print(f"输入: {json.dumps(tool_call_info['input'], ensure_ascii=False, indent=2)}")
-    
-    response = input("是否批准此调用？(y/n): ").strip().lower()
-    return response in ("y", "yes")
-
-# ========== 主程序 ==========
-
-def main():
-    """主程序入口"""
-    # 1. 初始化模型
-    model = init_model()
-    
-    # 2. 创建审批回调
-    approval_callback = ApprovalCallbackHandler(max_retries=3)
-    approval_callback.set_approval_func(default_approval_func)
-    
-    # 3. 构建 Agent
-    tools = [send_email]
-    agent_executor = build_agent(model, tools, approval_callback)
-    
-    # 4. 运行示例任务
-    print("=== 开始执行任务 ===")
-    print("示例：请给 test@example.com 发送一封测试邮件，主题为'测试'，内容为'这是一封测试邮件'")
-    
-    result = agent_executor.invoke({
-        "input": "请给 test@example.com 发送一封测试邮件，主题为'测试'，内容为'这是一封测试邮件'"
-    })
-    
-    print("\n=== 执行结果 ===")
-    print(result["output"])
-
+# ---------- 主程序 ----------
 if __name__ == "__main__":
-    main()
+    # 初始化模型
+    llm = initialize_model()
+
+    # 构建 Agent
+    agent_executor = build_agent(llm)
+
+    # 测试对话
+    print("=" * 60)
+    print("LangChain Agent 演示 - 人工审批 + 自动重试")
+    print("=" * 60)
+
+    # 示例1: 发送邮件（需要人工审批）
+    print("\n【示例1】请求发送邮件")
+    response1 = agent_executor.invoke({
+        "input": "请给 test@example.com 发送一封邮件，主题为'测试邮件'，内容为'这是一封测试邮件。'",
+        "chat_history": []
+    })
+    print(f"Agent 回复: {response1['output']}")
+
+    # 示例2: 查询时间（无需审批）
+    print("\n【示例2】查询当前时间")
+    response2 = agent_executor.invoke({
+        "input": "现在几点了？",
+        "chat_history": []
+    })
+    print(f"Agent 回复: {response2['output']}")
+
+    print("\n演示结束。")

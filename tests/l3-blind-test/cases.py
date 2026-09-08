@@ -1,10 +1,15 @@
 # -*- coding: utf-8 -*-
-"""L3 盲测用例定义 — prompt + 评分项（与 tests/blind_test.md 同源）"""
+"""L3 盲测用例定义 — prompt + 评分项（与 tests/blind_test.md 同源）
+
+skill 字段决定 ON 组注入哪个子技能作为系统提示：
+  langchain-v1 / deepagents-v1 / langgraph-v1
+"""
 
 CASES = [
     {
         "id": 1,
         "name": "basic_weather_agent",
+        "skill": "langchain-v1",
         "prompt": (
             "请用 Python + LangChain 写一个天气查询 Agent，"
             "用户输入城市名，Agent 调用 get_weather 工具返回天气。\n"
@@ -23,6 +28,7 @@ CASES = [
     {
         "id": 2,
         "name": "memory_customer_bot",
+        "skill": "langchain-v1",
         "prompt": (
             "请用 LangChain 实现一个客服 Bot，能记住用户的姓名和偏好，"
             "在后续对话中使用这些信息。\n"
@@ -40,6 +46,7 @@ CASES = [
     {
         "id": 3,
         "name": "resume_structured_output",
+        "skill": "langchain-v1",
         "prompt": (
             "请用 LangChain 写一个简历解析 Agent，"
             "输入简历文本，输出结构化的 CandidateInfo（含 name, skills, score）。\n"
@@ -58,6 +65,7 @@ CASES = [
     {
         "id": 4,
         "name": "hitl_email_approval",
+        "skill": "langchain-v1",
         "prompt": (
             "LangChain Agent 需要对 send_email 工具调用进行人工审批，"
             "同时对工具失败进行自动重试（最多 3 次）。请实现。\n"
@@ -76,6 +84,7 @@ CASES = [
     {
         "id": 5,
         "name": "multi_agent_manager",
+        "skill": "langchain-v1",
         "prompt": (
             "请用 LangChain 实现一个研发团队 Agent 系统："
             "一个 Manager Agent 根据任务类型分发给 Coder 或 Reviewer 子 Agent。\n"
@@ -89,6 +98,47 @@ CASES = [
             "Manager 用路由逻辑分发，而非 if-else",
         ],
         "build_fn": "build_manager_agent",
+        "model_fn": "create_model",
+    },
+    {
+        "id": 6,
+        "name": "deep_research_planner",
+        "skill": "deepagents-v1",
+        "prompt": (
+            "请用 Python + DeepAgents 实现一个深度研究规划 Agent："
+            "它通过 @tool 自定义一个计算器工具（加/乘），把研究预算算出来，"
+            "并以结构化输出返回研究计划（计划标题 + 预算 + 步骤列表）。\n"
+            "注意：这是一个可运行的示例，请把 '模型初始化' 与 'Agent 构建' 拆到独立函数，"
+            "并在文件末尾保留 `if __name__ == \"__main__\":` 入口（入口内可只做单轮示例调用）。"
+        ),
+        "points": [
+            "用 create_deep_agent() 而非 create_agent / AgentExecutor",
+            "模型经 create_deep_agent(model=...) 或 init_chat_model 传入，而非 ChatOpenAI",
+            "工具用 @tool 装饰器定义，而非 Tool.from_function",
+            "结构化输出用 response_format=Pydantic（而非手拼 JSON），中间件按需显式声明",
+        ],
+        "build_fn": "build_deep_research_agent",
+        "model_fn": "create_model",
+    },
+    {
+        "id": 7,
+        "name": "langgraph_memory_qa",
+        "skill": "langgraph-v1",
+        "prompt": (
+            "请用 LangGraph 的 StateGraph 实现一个带持久化记忆的问答图：\n"
+            "state 含 messages（消息列表，用 Annotated reducer 累积）与 turns（轮次计数），\n"
+            "assistant 节点用传入的 chat model 生成回复并追加进 messages，bump 节点把 turns 加 1；\n"
+            "用 compile(checkpointer=InMemorySaver()) 编译，同一 thread_id 连续两次 invoke 能恢复上文。\n"
+            "注意：这是一个可运行的示例，请把 '模型初始化' 与 '图构建' 拆到独立函数，"
+            "并在文件末尾保留 `if __name__ == \"__main__\":` 入口。"
+        ),
+        "points": [
+            "用 StateGraph + START/END + TypedDict state，而非旧式 Chain 手动编排",
+            "用 Annotated + operator.add reducer 累积 messages，而非手写拼接",
+            "用 checkpointer=InMemorySaver() + config thread_id 实现跨轮记忆",
+            "模型用参数注入/init_chat_model 实例，而非 ChatOpenAI",
+        ],
+        "build_fn": "build_qa_graph",
         "model_fn": "create_model",
     },
 ]

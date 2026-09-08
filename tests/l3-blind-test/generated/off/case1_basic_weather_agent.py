@@ -15,79 +15,50 @@ class WeatherInput(BaseModel):
 
 
 class GetWeatherTool(BaseTool):
-    """查询指定城市的天气信息（模拟数据）"""
-
+    """模拟天气查询工具（实际可替换为真实 API）"""
     name: str = "get_weather"
-    description: str = (
-        "查询指定城市的当前天气情况。输入应为城市名称（中文或英文均可）。"
-        "例如：'北京'、'Shanghai'。"
-    )
+    description: str = "查询指定城市的当前天气情况"
     args_schema: Type[BaseModel] = WeatherInput
 
     def _run(self, city: str) -> str:
-        # 模拟天气数据，实际项目中可替换为真实 API 调用
+        # 模拟数据，实际可替换为真实天气 API 调用
         weather_map = {
             "北京": "晴，25°C，微风",
             "上海": "多云，28°C，东南风3级",
             "广州": "雷阵雨，30°C，南风2级",
-            "深圳": "阴，29°C，无持续风向",
-            "杭州": "小雨，24°C，东北风2级",
+            "深圳": "阴，29°C，西南风2级",
         }
-        # 支持英文城市名映射
-        en_map = {
-            "beijing": "北京",
-            "shanghai": "上海",
-            "guangzhou": "广州",
-            "shenzhen": "深圳",
-            "hangzhou": "杭州",
-        }
-        normalized = city.strip().lower()
-        if normalized in en_map:
-            city_cn = en_map[normalized]
-        else:
-            city_cn = city.strip()
-
-        if city_cn in weather_map:
-            return f"{city_cn}：{weather_map[city_cn]}"
-        else:
-            return f"抱歉，暂未收录 {city_cn} 的天气数据。"
+        return weather_map.get(city, f"抱歉，暂时没有{city}的天气数据，请尝试其他城市。")
 
 
 # ---------- 模型初始化 ----------
-def init_llm() -> ChatOpenAI:
-    """初始化大语言模型（使用 OpenAI 兼容接口）"""
-    # 请确保已设置 OPENAI_API_KEY 环境变量，或在此处直接传入
-    api_key = os.getenv("OPENAI_API_KEY", "sk-your-key-here")
+def init_model() -> ChatOpenAI:
+    """初始化 LLM 模型（使用 OpenAI 兼容接口）"""
+    api_key = os.getenv("OPENAI_API_KEY", "sk-your-key")
     base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
     return ChatOpenAI(
         model="gpt-4o-mini",
-        temperature=0,
         api_key=api_key,
         base_url=base_url,
+        temperature=0,
     )
 
 
 # ---------- Agent 构建 ----------
-def build_agent(llm: ChatOpenAI) -> AgentExecutor:
-    """构建天气查询 Agent"""
+def build_agent(model: ChatOpenAI) -> AgentExecutor:
+    """构建带天气工具的 Agent"""
     tools = [GetWeatherTool()]
 
     prompt = ChatPromptTemplate.from_messages(
         [
-            SystemMessage(
-                content=(
-                    "你是一个天气查询助手。当用户询问某个城市的天气时，"
-                    "你必须调用 get_weather 工具来获取信息。"
-                    "如果用户没有明确指定城市，请主动询问。"
-                )
-            ),
+            SystemMessage(content="你是一个天气查询助手，请根据用户输入的城市名，调用工具查询天气。"),
             MessagesPlaceholder(variable_name="chat_history"),
             HumanMessage(content="{input}"),
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ]
     )
 
-    agent = create_tool_calling_agent(llm, tools, prompt)
+    agent = create_tool_calling_agent(model, tools, prompt)
     executor = AgentExecutor(
         agent=agent,
         tools=tools,
@@ -100,8 +71,10 @@ def build_agent(llm: ChatOpenAI) -> AgentExecutor:
 
 # ---------- 主入口 ----------
 if __name__ == "__main__":
-    # 初始化模型与 Agent
-    llm = init_llm()
+    # 初始化模型
+    llm = init_model()
+
+    # 构建 Agent
     agent_executor = build_agent(llm)
 
     # 单轮示例调用
@@ -111,5 +84,4 @@ if __name__ == "__main__":
             "chat_history": [],
         }
     )
-    print("\n=== 最终回答 ===")
-    print(result["output"])
+    print("\n最终回答：", result["output"])

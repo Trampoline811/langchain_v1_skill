@@ -1,60 +1,59 @@
 from typing import List, Optional
 from pydantic import BaseModel, Field
-from langchain.agents import create_agent
+
 from langchain.chat_models import init_chat_model
-from langchain.agents.structured_output import ToolStrategy
+from langchain.agents import create_agent
 
 
 class CandidateInfo(BaseModel):
-    """Structured output schema for parsed resume."""
+    """Structured information extracted from a resume."""
     name: str = Field(description="Full name of the candidate")
-    skills: List[str] = Field(description="List of technical skills mentioned")
+    skills: List[str] = Field(description="List of technical and professional skills")
     score: int = Field(description="Overall candidate score from 0 to 100")
 
 
-def init_model() -> str:
-    """Initialize and return the chat model identifier."""
-    # Using OpenAI GPT-4o as an example; swap with any supported provider/model
-    return "openai:gpt-4o"
+def initialize_model():
+    """Initialize the chat model."""
+    return init_chat_model("openai:gpt-4o", temperature=0.0)
 
 
-def build_agent(model: str):
-    """Build and return the resume parsing agent."""
-    agent = create_agent(
+def build_resume_parser_agent(model):
+    """Build the resume parsing agent with structured output."""
+    return create_agent(
         model=model,
         system_prompt=(
-            "You are an expert resume parser. Extract the candidate's name, "
-            "technical skills, and provide an overall score (0-100) based on "
-            "experience, skill relevance, and achievements."
+            "You are a resume parsing assistant. "
+            "Extract the candidate's name, skills, and an overall score (0-100) "
+            "from the provided resume text."
         ),
-        response_format=ToolStrategy(
-            schema=CandidateInfo,
-            handle_errors=True,
-        ),
+        response_format=CandidateInfo,
     )
-    return agent
 
 
 if __name__ == "__main__":
-    # --- Initialize model and build agent ---
-    model_id = init_model()
-    agent = build_agent(model_id)
+    # Initialize model and build agent
+    llm = initialize_model()
+    agent = build_resume_parser_agent(llm)
 
-    # --- Example resume text ---
+    # Sample resume text
     resume_text = """
     John Doe
-    Senior Python Developer with 8 years of experience.
-    Skills: Python, FastAPI, LangChain, PostgreSQL, Docker, AWS.
-    Led a team of 5 engineers to build a scalable microservices platform.
+    Senior Software Engineer
+    
+    Skills: Python, FastAPI, LangChain, PostgreSQL, Docker, Kubernetes
+    
+    Experience:
+    - 5 years building backend services
+    - Led a team of 4 engineers
+    - Designed microservices architecture
     """
 
-    # --- Invoke the agent ---
-    result = agent.invoke(
-        {"messages": [{"role": "user", "content": resume_text}]}
-    )
+    # Invoke the agent
+    result = agent.invoke({
+        "messages": [
+            {"role": "user", "content": f"Parse this resume:\n\n{resume_text}"}
+        ]
+    })
 
-    # --- Extract structured response ---
-    candidate: CandidateInfo = result["structured_response"]
-    print(f"Name: {candidate.name}")
-    print(f"Skills: {', '.join(candidate.skills)}")
-    print(f"Score: {candidate.score}")
+    # Print structured output
+    print(result["structured_response"])
